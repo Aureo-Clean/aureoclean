@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.env
+!aureoclean.env.example
+service-account*.json
+*-firebase-adminsdk-*.json
+logs/

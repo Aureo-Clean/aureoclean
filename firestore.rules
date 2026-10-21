@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// AureoClean's account collections are only ever touched by the backend on the
+// Raspberry Pi, which uses the Admin SDK (Admin SDK access bypasses these rules).
+// No phone, browser or other client may read or write them directly.
+//
+// IMPORTANT: if this Firebase project already has rules for other collections
+// (complaints, QR feedback, ...), MERGE this block into the existing rules
+// instead of replacing them.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /aureoUsers/{doc=**}                 { allow read, write: if false; }
+    match /aureoUsernames/{doc=**}             { allow read, write: if false; }
+    match /aureoRegistrationRequests/{doc=**}  { allow read, write: if false; }
+    match /aureoAdminInvites/{doc=**}          { allow read, write: if false; }
+    match /aureoAuditLogs/{doc=**}             { allow read, write: if false; }
+  }
+}
