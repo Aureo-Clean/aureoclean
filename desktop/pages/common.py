@@ -5,9 +5,9 @@ import shutil
 
 from PySide6.QtCore import QProcess, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QCheckBox, QFrame, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
 
-from ..widgets import BusyButton, Field, Message, button, card, label, run_async, show_password_toggle
+from ..widgets import BusyButton, Field, Message, button, card, label, logo_label, run_async, show_password_toggle
 
 
 class TopBar(QFrame):
@@ -15,16 +15,18 @@ class TopBar(QFrame):
         super().__init__()
         self.setObjectName("TopBar")
         row = QHBoxLayout(self)
-        row.setContentsMargins(18, 10, 14, 10)
+        row.setContentsMargins(10, 5, 10, 5)
+        row.setSpacing(8)
+        row.addWidget(logo_label(26, white_tile=True))
         row.addWidget(label(title, "TopTitle", wrap=False))
         row.addStretch(1)
         self.who = label("", wrap=False)
         row.addWidget(self.who)
-        row.addSpacing(10)
+        row.addSpacing(6)
         row.addWidget(button("Sign out", "TopButton", on_logout))
 
     def set_user(self, user: dict):
-        self.who.setText(f"{user.get('fullName') or user.get('username')}  ·  {user.get('role', '').capitalize()}")
+        self.who.setText(user.get("fullName") or user.get("username") or "")
 
 
 class SmsCard(QWidget):
@@ -43,31 +45,29 @@ class SmsCard(QWidget):
         body.addWidget(self.state)
 
         self.alerts = QCheckBox("Send me alerts by SMS")
-        self.alerts.setStyleSheet("font-size: 15px; color: #1B2428;")
         self.alerts.toggled.connect(self.toggle_alerts)
         body.addWidget(self.alerts)
 
-        # Step 1: number
+        # Step 1: number + send button on one row
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
         self.number = Field("Mobile number", "0917 123 4567")
-        body.addWidget(self.number)
-        self.send_btn = button("Send verification code", "Primary", self.send_code)
+        row1.addWidget(self.number, 1)
+        self.send_btn = button("Send code", "Primary", self.send_code)
         self.send_busy = BusyButton(self.send_btn, "Sending…")
-        body.addWidget(self.send_btn)
+        row1.addWidget(self.send_btn, 0, Qt.AlignBottom)
+        body.addLayout(row1)
 
-        # Step 2: code
+        # Step 2: code + verify button on one row
         self.code_box = QWidget()
-        cl = QVBoxLayout(self.code_box)
-        cl.setContentsMargins(0, 6, 0, 0)
-        cl.setSpacing(8)
+        row2 = QHBoxLayout(self.code_box)
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(6)
         self.code = Field("6-digit code from the SMS", "123456")
-        cl.addWidget(self.code)
-        row = QHBoxLayout()
-        self.verify_btn = button("Verify number", "Gold", self.verify)
+        row2.addWidget(self.code, 1)
+        self.verify_btn = button("Verify", "Gold", self.verify)
         self.verify_busy = BusyButton(self.verify_btn, "Checking…")
-        row.addWidget(self.verify_btn)
-        row.addStretch(1)
-        cl.addLayout(row)
-        cl.addWidget(label("Didn't get it? Wait a minute, then send the code again.", "Muted"))
+        row2.addWidget(self.verify_btn, 0, Qt.AlignBottom)
         body.addWidget(self.code_box)
 
         self.remove_btn = button("Remove my number", "Danger", self.remove)
@@ -77,11 +77,9 @@ class SmsCard(QWidget):
 
         self.number.edit.returnPressed.connect(self.send_btn.click)
         self.code.edit.returnPressed.connect(self.verify_btn.click)
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        frame.setMaximumWidth(460)
         layout.addWidget(frame)
-        layout.addStretch(1)
 
     def load(self, profile: dict):
         self.profile = profile
@@ -89,11 +87,11 @@ class SmsCard(QWidget):
         pending = profile.get("smsPendingPhone")
         if verified:
             on = "on" if profile.get("smsAlerts") else "off"
-            self.state.setText(f"✓ Verified number: {verified}\nSMS alerts are {on}.")
-            self.send_btn.setText("Change number")
+            self.state.setText(f"✓ {verified} verified · SMS alerts {on}")
+            self.send_btn.setText("Change")
         else:
-            self.state.setText("No mobile number yet. Add one to receive SMS alerts.")
-            self.send_btn.setText("Send verification code")
+            self.state.setText("No mobile number yet.")
+            self.send_btn.setText("Send code")
         self.send_busy.idle_text = self.send_btn.text()
         self.alerts.blockSignals(True)
         self.alerts.setChecked(bool(profile.get("smsAlerts")))
@@ -166,8 +164,9 @@ class SmsCard(QWidget):
         run_async(self.api.phone_remove, ok, self._fail)
 
 
-# Browsers to try, in order. Chromium comes with Raspberry Pi OS.
-BROWSERS = ("chromium-browser", "chromium", "firefox", "firefox-esr")
+# Browsers to try, in order: Google Chrome first (keeps you signed in with your
+# Google account), then the Chromium that comes with Raspberry Pi OS.
+BROWSERS = ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "firefox", "firefox-esr")
 
 
 def _make_room(parent: QWidget) -> None:
@@ -193,7 +192,7 @@ def open_in_browser(url: str, parent: QWidget) -> None:
         return
     box = QMessageBox(parent)
     box.setWindowTitle("Couldn't open the browser")
-    box.setText("No web browser was found. Open Chromium and go to this address:")
+    box.setText("No web browser was found. Open Chrome and go to this address:")
     box.setInformativeText(url)
     box.setTextInteractionFlags(Qt.TextSelectableByMouse)
     box.exec()
@@ -215,28 +214,34 @@ class LinkButton(QWidget):
         layout.addWidget(frame)
 
 
-class ChangePasswordCard(QWidget):
-    def __init__(self, api):
-        super().__init__()
+class ChangePasswordDialog(QDialog):
+    """Pop-up for changing your own password (keeps the profile page short)."""
+
+    def __init__(self, api, parent: QWidget):
+        super().__init__(parent)
         self.api = api
-        frame, body = card()
+        self.setWindowTitle("Change password")
+        self.setModal(True)
+        body = QVBoxLayout(self)
+        body.setContentsMargins(16, 14, 16, 14)
+        body.setSpacing(7)
         body.addWidget(label("Change password", "Section"))
         self.current = Field("Current password", password=True)
-        self.new = Field("New password", password=True, hint="At least 8 characters with a letter and a number.")
+        self.new = Field("New password", password=True, hint="8+ characters with a letter and a number.")
         self.confirm = Field("Confirm new password", password=True)
         for f in (self.current, self.new, self.confirm):
             body.addWidget(f)
         body.addWidget(show_password_toggle(self.current, self.new, self.confirm))
         self.message = Message()
         body.addWidget(self.message)
+        row = QHBoxLayout()
+        row.addWidget(button("Cancel", on_click=self.reject))
+        row.addStretch(1)
         self.submit = button("Update password", "Primary", self.do_change)
         self.busy = BusyButton(self.submit, "Updating…")
-        body.addWidget(self.submit)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        frame.setMaximumWidth(460)
-        layout.addWidget(frame)
-        layout.addStretch(1)
+        row.addWidget(self.submit)
+        body.addLayout(row)
+        self.setMinimumWidth(min(380, parent.window().width() - 20))
 
     def do_change(self):
         self.message.clear()
@@ -249,9 +254,12 @@ class ChangePasswordCard(QWidget):
         current, new = self.current.text(), self.new.text()
         self.busy.start()
 
-        def ok(result):
-            for f in (self.current, self.new, self.confirm):
-                f.clear()
-            self.message.success(result.get("message", "Password changed."))
+        def ok(_result):
+            QMessageBox.information(self, "Password changed", "Your password has been changed.")
+            self.accept()
 
         run_async(lambda: self.api.change_password(current, new), ok, lambda e: self.message.error(e.message), self.busy.stop)
+
+
+def change_password_button(api, parent: QWidget):
+    return button("Change password…", on_click=lambda: ChangePasswordDialog(api, parent).exec())

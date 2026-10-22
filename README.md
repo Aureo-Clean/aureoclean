@@ -104,26 +104,21 @@ shows the error (full details in `logs/backend.log`).
 
 ## Arduino IoT Cloud dashboard
 
-**Janitors see the dashboard automatically** — it's the first tab after they sign in.
-
-- If the in-app viewer (Qt WebEngine) is installed, the dashboard appears **inside** the AureoClean window.
-- If not (common on the Pi — `setup_pi.sh` tells you which), it opens automatically in its **own
-  Chromium window** (no address bar) at sign-in, and closes again at sign-out.
-  Force this mode with `AUREOCLEAN_DASHBOARD_EMBED=0`.
-
-Set it up once:
+The dashboard is **built into the app**: it's the first tab for both admins and janitors.
+There is one shared dashboard view, so it stays loaded between sign-ins.
 
 1. In Arduino Cloud open your dashboard and copy the link from the address bar.
 2. Put it in `~/.config/aureoclean/aureoclean.env`: `AUREOCLEAN_DASHBOARD_URL=https://app.arduino.cc/dashboards/…`
-3. Restart the app and sign in as a janitor. The first time, Arduino asks you to sign in —
-   do it once; the Pi remembers it (in its own browser profile, separate from the admin's Chromium).
+3. Restart the app. Sign in to Arduino **once** inside the Dashboard tab — the sign-in is saved
+   permanently (even Arduino's "session" cookie), so it survives sign-outs and restarts.
 
-**Which Arduino account to sign in with:** whoever is signed in there can do whatever
-that Arduino account can do. Best: make a separate Arduino account for the janitors and
-share the dashboard with it, so the janitor screen can't edit devices or sketches.
-The in-app viewer only allows Arduino pages, but that's a convenience, not a security wall.
+Use **A− / A+** to zoom the dashboard to fit the 7-inch screen (remembered), and **⟳ Reload** if it stalls.
+Whoever is signed in to Arduino there decides what can be changed — a view-only Arduino account
+shared with the dashboard is the safest choice.
 
-Admins open the dashboard, Arduino Cloud and Firebase Console from the **Tools** tab.
+Admins open Arduino Cloud and the Firebase Console from the **Tools** tab; those open in
+**Google Chrome** (install once with `./tools/install_chrome.sh`). In Chrome, turn on
+*Settings → On start-up → Continue where you left off* so websites keep you signed in after closing Chrome.
 
 ## SMS alerts
 

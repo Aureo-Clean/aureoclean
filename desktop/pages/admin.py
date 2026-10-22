@@ -1,4 +1,5 @@
-"""Administrator console: requests, users, invites, audit log, account."""
+"""Administrator console: dashboard, requests, users, invites, audit log, tools, account.
+Laid out for the 7-inch 800x480 display (no stat tiles; counts live in the tab names)."""
 from __future__ import annotations
 
 
@@ -29,7 +30,7 @@ from ..widgets import (
     selected_object,
     status_item,
 )
-from .common import ChangePasswordCard, LinkButton, SmsCard, TopBar
+from .common import LinkButton, SmsCard, TopBar, change_password_button
 
 ACTION_LABELS = {
     "login": "Signed in",
@@ -65,8 +66,8 @@ class _Tab(QWidget):
         self.api = api
         self.message = Message()
         self.layout_ = QVBoxLayout(self)
-        self.layout_.setContentsMargins(16, 14, 16, 16)
-        self.layout_.setSpacing(10)
+        self.layout_.setContentsMargins(8, 6, 8, 8)
+        self.layout_.setSpacing(6)
 
     def fail(self, e):
         window = self.window()
@@ -77,7 +78,7 @@ class _Tab(QWidget):
 
 # ====================================================================== requests
 class RequestsTab(_Tab):
-    FILTERS = [("Pending", "pending"), ("Approved (awaiting activation)", "approved"),
+    FILTERS = [("Pending", "pending"), ("Awaiting activation", "approved"),
                ("Activated", "activated"), ("Rejected", "rejected"), ("All", "")]
 
     def __init__(self, api, on_change):
@@ -90,8 +91,9 @@ class RequestsTab(_Tab):
             self.filter.addItem(text, value)
         self.filter.currentIndexChanged.connect(self.refresh)
         bar.addWidget(self.filter)
-        bar.addStretch(1)
-        bar.addWidget(button("Refresh", on_click=self.refresh))
+        self.summary = label("", "Muted", wrap=False)
+        bar.addWidget(self.summary, 1)
+        bar.addWidget(button("Refresh", "Small", self.refresh))
         self.layout_.addLayout(bar)
 
         self.table = make_table(["Submitted", "Full name", "Username", "Email", "Status", "Note"])
@@ -255,46 +257,35 @@ class UsersTab(_Tab):
 
 # ====================================================================== tools
 class ToolsTab(_Tab):
-    """Shortcuts to the Arduino IoT Cloud dashboard, Arduino Cloud and Firebase, plus SMS modem status."""
+    """Shortcuts to Arduino Cloud and Firebase (open in Chrome), plus SMS modem status."""
 
     def __init__(self, api):
         super().__init__(api)
-        self.layout_.addWidget(label("Monitoring & cloud tools", "Section"))
         self.layout_.addWidget(label(
-            "These open in the web browser. Access to each website is controlled by its own account "
-            "(Arduino / Google), not by AureoClean — sign in with the project accounts there.", "Muted"))
-        self.links_box = QVBoxLayout()
-        self.links_box.setSpacing(10)
-        self.layout_.addLayout(self.links_box)
+            "These open in Google Chrome. Access is controlled by each website's own account.", "Muted"))
+        self.grid = QGridLayout()
+        self.grid.setSpacing(8)
+        self.layout_.addLayout(self.grid)
 
-        frame, body = card()
+        self.sms_frame, body = card()
         body.addWidget(label("SMS modem", "Section"))
         self.sms_state = label("Not checked yet.", "Muted")
         body.addWidget(self.sms_state)
-        row = QHBoxLayout()
         self.check_btn = button("Check SMS modem", on_click=self.check_sms)
-        row.addWidget(self.check_btn)
-        row.addStretch(1)
-        body.addLayout(row)
-        self.layout_.addWidget(frame)
+        body.addWidget(self.check_btn, 0)
         self.layout_.addWidget(self.message)
         self.layout_.addStretch(1)
 
     def refresh(self):
         def ok(links):
-            while self.links_box.count():
-                item = self.links_box.takeAt(0)
-                if item.widget():
+            while self.grid.count():
+                item = self.grid.takeAt(0)
+                if item.widget() and item.widget() is not self.sms_frame:
                     item.widget().deleteLater()
-            for link in links:
-                self.links_box.addWidget(LinkButton(link))
-            if not any(l["key"] == "dashboard" for l in links):
-                note, nb = card()
-                nb.addWidget(label("Restroom monitoring dashboard", "Section"))
-                nb.addWidget(label(
-                    "Not set up yet. In Arduino Cloud open your dashboard, copy its link, and put it in "
-                    "~/.config/aureoclean/aureoclean.env as AUREOCLEAN_DASHBOARD_URL=… then restart the app.", "Muted"))
-                self.links_box.insertWidget(0, note)
+            tiles = [LinkButton(link) for link in links if link.get("key") != "dashboard"]
+            tiles.append(self.sms_frame)
+            for i, tile in enumerate(tiles):
+                self.grid.addWidget(tile, i // 2, i % 2)
 
         run_async(self.api.links, ok, self.fail)
 
@@ -421,7 +412,10 @@ class AuditTab(_Tab):
         run_async(lambda: self.api.audit(200), ok, self.fail)
 
 
-# ====================================================================== dashboard
+# ====================================================================== console
+TAB_DASHBOARD, TAB_REQUESTS, TAB_USERS, TAB_INVITES, TAB_AUDIT, TAB_TOOLS, TAB_ACCOUNT = range(7)
+
+
 class AdminDashboard(QWidget):
     def __init__(self, nav):
         super().__init__()
@@ -430,71 +424,78 @@ class AdminDashboard(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.topbar = TopBar("AureoClean · Admin console", nav.logout)
+        self.topbar = TopBar("AureoClean · Admin", nav.logout)
         root.addWidget(self.topbar)
 
-        # Overview stat tiles.
-        stats = QWidget()
-        grid = QGridLayout(stats)
-        grid.setContentsMargins(16, 14, 16, 0)
-        grid.setSpacing(10)
-        self.stat_labels = {}
-        tiles = [("pendingRequests", "Pending requests"), ("awaitingActivation", "Awaiting activation"),
-                 ("activeJanitors", "Active janitors"), ("activeAdmins", "Active admins")]
-        for i, (key, title) in enumerate(tiles):
-            frame, body = card()
-            body.setContentsMargins(16, 10, 16, 10)
-            body.setSpacing(0)
-            value = label("–", "StatValue", wrap=False)
-            body.addWidget(value)
-            body.addWidget(label(title, "Muted"))
-            self.stat_labels[key] = value
-            grid.addWidget(frame, 0, i)
-        root.addWidget(stats)
-
         self.tabs = QTabWidget()
+        self.dash_tab = QWidget()
+        dl = QVBoxLayout(self.dash_tab)
+        dl.setContentsMargins(0, 0, 0, 0)
         self.requests = RequestsTab(self.api, self.refresh_overview)
         self.users = UsersTab(self.api, self.refresh_overview)
         self.invites = InvitesTab(self.api)
         self.audit = AuditTab(self.api)
-        account = QWidget()
-        al = QVBoxLayout(account)
-        al.setContentsMargins(16, 14, 16, 16)
-        self.sms = SmsCard(self.api, "Admins receive critical alerts (e.g. fire / emergency stop) and system "
-                                     "notices by SMS once the alert service is connected. Add your number here.")
-        al.addWidget(self.sms)
-        al.addWidget(ChangePasswordCard(self.api))
-        al.addStretch(1)
-        self.tabs.addTab(self.requests, "Janitor requests")
-        self.tabs.addTab(self.users, "Users")
-        self.tabs.addTab(scroll_page(self.invites), "Admin invites")
         self.tools = ToolsTab(self.api)
-        self.tabs.addTab(self.audit, "Audit log")
+
+        # My account: details/password | SMS, side by side.
+        account = QWidget()
+        grid = QGridLayout(account)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        info, ib = card()
+        ib.addWidget(label("My account", "Section"))
+        self.account_info = label("", "Muted")
+        ib.addWidget(self.account_info)
+        ib.addWidget(change_password_button(self.api, self))
+        ib.addStretch(1)
+        self.sms = SmsCard(self.api, "Critical alerts (fire, emergency stop) and system notices by text.")
+        grid.addWidget(info, 0, 0)
+        grid.addWidget(self.sms, 0, 1)
+        grid.setColumnStretch(0, 5)
+        grid.setColumnStretch(1, 6)
+        grid.setRowStretch(1, 1)
+
+        self.tabs.addTab(self.dash_tab, "Dashboard")
+        self.tabs.addTab(self.requests, "Requests")
+        self.tabs.addTab(self.users, "Users")
+        self.tabs.addTab(scroll_page(self.invites), "Invites")
+        self.tabs.addTab(self.audit, "Audit")
         self.tabs.addTab(scroll_page(self.tools), "Tools")
-        self.tabs.addTab(scroll_page(account), "My account")
+        self.tabs.addTab(scroll_page(account), "Account")
         self.tabs.currentChanged.connect(self._tab_changed)
         root.addWidget(self.tabs, 1)
 
     def _tab_changed(self, index):
-        refreshers = {0: self.requests.refresh, 1: self.users.refresh, 2: self.invites.refresh, 3: self.audit.refresh,
-                      4: self.tools.refresh, 5: self.load_account}
+        refreshers = {TAB_REQUESTS: self.requests.refresh, TAB_USERS: self.users.refresh,
+                      TAB_INVITES: self.invites.refresh, TAB_AUDIT: self.audit.refresh,
+                      TAB_TOOLS: self.tools.refresh, TAB_ACCOUNT: self.load_account}
         if index in refreshers:
             refreshers[index]()
+        if index in (TAB_DASHBOARD, TAB_REQUESTS):
+            self.refresh_overview()
 
     def enter(self, user: dict):
         self.topbar.set_user(user)
         self.users.my_uid = user["uid"]
-        self.tabs.setCurrentIndex(0)
+        self.account_info.setText(f"{user.get('fullName', '')}\n{user.get('username', '')} · {user.get('email', '')}")
+        self.nav.dashboard.attach_to(self.dash_tab)
         self.requests.filter.setCurrentIndex(0)
+        self.tabs.blockSignals(True)
+        self.tabs.setCurrentIndex(TAB_DASHBOARD)
+        self.tabs.blockSignals(False)
         self.refresh_overview()
-        self.requests.refresh()
 
     def load_account(self):
         run_async(self.api.me, self.sms.load, lambda e: self.nav.handle_session_error(e))
 
     def refresh_overview(self):
+        """Pending count goes in the tab name, e.g. "Requests (2)"."""
+
         def ok(ov):
-            for key, lbl in self.stat_labels.items():
-                lbl.setText(str(ov.get(key, "–")))
+            pending = ov.get("pendingRequests", 0)
+            self.tabs.setTabText(TAB_REQUESTS, f"Requests ({pending})" if pending else "Requests")
+            self.requests.summary.setText(
+                f"{pending} pending · {ov.get('awaitingActivation', 0)} awaiting activation · "
+                f"{ov.get('activeJanitors', 0)} active janitors")
 
         run_async(self.api.admin_overview, ok, lambda e: self.nav.handle_session_error(e))

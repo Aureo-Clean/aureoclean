@@ -23,17 +23,16 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 sha256sum requirements.txt | cut -d' ' -f1 > .venv/.requirements-hash
 
-echo "-- Chromium (shows the Arduino dashboard)"
-command -v chromium-browser >/dev/null || command -v chromium >/dev/null || \
-  sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium || true
+echo "-- Google Chrome (opens Arduino Cloud / Firebase links)"
+./tools/install_chrome.sh || true
 
-echo "-- Optional: in-app dashboard viewer (Qt WebEngine)"
+echo "-- In-app dashboard viewer (Qt WebEngine)"
 PYSIDE_VER="$(.venv/bin/python -c 'import importlib.metadata as m; print(m.version("PySide6"))')"
 if .venv/bin/pip install "PySide6-Addons[webengine]==$PYSIDE_VER" >/dev/null 2>&1 \
    && .venv/bin/python -c "import PySide6.QtWebEngineWidgets" 2>/dev/null; then
-  echo "   Installed: the dashboard will show inside the AureoClean window."
+  echo "   Installed: the Arduino dashboard shows inside AureoClean."
 else
-  echo "   Not available for this Pi: the dashboard will open in its own Chromium window instead (that's fine)."
+  echo "   WARNING: couldn't install it. The Dashboard tab needs it - tell your developer."
 fi
 
 echo "-- Preparing $CONFIG_DIR"

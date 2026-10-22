@@ -1,6 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <rect x="4" y="4" width="120" height="120" rx="28" fill="#0F4C5C"/>
-  <path d="M64 22 C64 22 34 58 34 78 a30 30 0 0 0 60 0 C94 58 64 22 64 22 Z" fill="#C8971E"/>
-  <path d="M50 80 a14 14 0 0 0 14 14" fill="none" stroke="#FBF3DE" stroke-width="6" stroke-linecap="round"/>
-  <path d="M96 22 l4 10 10 4 -10 4 -4 10 -4 -10 -10 -4 10 -4 Z" fill="#FFFFFF"/>
+  <defs>
+    <linearGradient id="aBlue" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#1EA7E8"/>
+      <stop offset="1" stop-color="#173F92"/>
+    </linearGradient>
+    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22A9EC"/>
+      <stop offset="1" stop-color="#1A4FA8"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#2E9B45"/>
+      <stop offset="1" stop-color="#8DC63F"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="#FFFFFF"/>
+  <rect x="2.5" y="2.5" width="123" height="123" rx="27.5" fill="none" stroke="#D5E1EE"/>
+  <!-- simplified mark for small sizes: A, drop, leaf -->
+  <g transform="translate(12 12) scale(0.8125)">
+    <path d="M53 10 H75 L119 114 H96 L64 37 L32 114 H9 Z" fill="url(#aBlue)"/>
+    <path d="M64 44 C64 44 46 66 46 81 a18 18 0 0 0 36 0 C82 66 64 44 64 44 Z" fill="url(#drop)"/>
+    <path d="M64 62 L66.5 69 L73 71 L66.5 73 L64 80 L61.5 73 L55 71 L61.5 69 Z" fill="#FFFFFF"/>
+    <path d="M22 102 C42 88 60 101 82 94 C98 89 110 76 118 60 C116 86 98 106 72 108 C54 109 38 104 22 102 Z" fill="url(#leaf)"/>
+  </g>
 </svg>

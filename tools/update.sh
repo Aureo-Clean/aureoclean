@@ -10,7 +10,14 @@
 # reinstalled when requirements.txt actually changed.
 set -uo pipefail
 
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="${AUREO_APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+# This script may replace itself while updating, so run from a temporary copy.
+if [ -z "${AUREO_UPDATE_COPY:-}" ]; then
+  COPY="$(mktemp)"
+  cp "$0" "$COPY"
+  AUREO_UPDATE_COPY=1 AUREO_APP_DIR="$APP_DIR" exec bash "$COPY" "$@"
+fi
+trap 'rm -f "$0"' EXIT
 cd "$APP_DIR"
 PY=.venv/bin/python
 
@@ -20,7 +27,6 @@ fail() { printf '\n\033[1;31m%s\033[0m\n' "$*"; read -rp "Press Enter to closeâ€
 say "Closing AureoClean"
 pkill -f "desktop.app" 2>/dev/null
 pkill -f "backend.main" 2>/dev/null
-pkill -f "user-data-dir=.*aureoclean/browser" 2>/dev/null   # dashboard window
 sleep 1
 
 if [ -d .git ]; then
@@ -55,6 +61,15 @@ elif [ "$(cat .venv/.requirements-hash 2>/dev/null)" != "$REQ_HASH" ]; then
   say "Installing new Python packages (only needed this time)"
   .venv/bin/pip install -q -r requirements.txt || fail "Installing packages failed. Check the internet connection."
   echo "$REQ_HASH" > .venv/.requirements-hash
+fi
+
+# The dashboard is shown inside the app: make sure its web viewer is installed.
+if ! "$PY" -c "import PySide6.QtWebEngineWidgets" 2>/dev/null; then
+  say "Installing the in-app dashboard viewer (only needed this time)"
+  VER="$("$PY" -c 'import importlib.metadata as m; print(m.version("PySide6"))' 2>/dev/null)"
+  if [ -z "$VER" ] || ! .venv/bin/pip install -q "PySide6-Addons[webengine]==$VER"; then
+    echo "Couldn't install it automatically; the Dashboard tab will explain what to do."
+  fi
 fi
 
 # Keep the desktop icons up to date (quietly).

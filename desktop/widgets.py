@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
@@ -92,9 +93,25 @@ def card(parent: Optional[QWidget] = None) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame(parent)
     frame.setObjectName("Card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(22, 20, 22, 20)
-    layout.setSpacing(10)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(7)
     return frame, layout
+
+
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def logo_label(size: int, white_tile: bool = False) -> QLabel:
+    """The AureoClean logo mark as a fixed-size label."""
+    from PySide6.QtGui import QIcon
+
+    lbl = QLabel()
+    lbl.setPixmap(QIcon(str(ASSETS / "logo-mark.svg")).pixmap(size, size))
+    lbl.setFixedSize(size + (6 if white_tile else 0), size + (6 if white_tile else 0))
+    lbl.setAlignment(Qt.AlignCenter)
+    if white_tile:
+        lbl.setStyleSheet("background: white; border-radius: 7px;")
+    return lbl
 
 
 def label(text: str = "", name: str = "", wrap: bool = True) -> QLabel:
@@ -123,7 +140,7 @@ def scroll_page(content: QWidget, max_width: Optional[int] = None) -> QScrollAre
     area.setFrameShape(QFrame.NoFrame)
     holder = QWidget()
     outer = QHBoxLayout(holder)
-    outer.setContentsMargins(16, 16, 16, 16)
+    outer.setContentsMargins(10, 10, 10, 10)
     if max_width:
         content.setMaximumWidth(max_width)
         content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -287,8 +304,8 @@ class CodeDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(min(460, parent.window().width() - 40) if parent else 420)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
         layout.addWidget(label(title, "Section"))
         layout.addWidget(label(intro))
         code_lbl = QLabel(code)

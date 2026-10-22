@@ -1,11 +1,13 @@
-"""Janitor screens: live dashboard (shown first, automatically), alerts, profile and SMS settings."""
+"""Janitor screens: live dashboard (first), alerts, and profile with SMS settings.
+
+Laid out for the 7-inch 800x480 display: the profile tab is two columns
+(details | SMS) so nothing needs scrolling."""
 from __future__ import annotations
 
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QTabWidget, QVBoxLayout, QWidget
 
 from ..widgets import button, card, fmt_time, label, run_async, scroll_page
-from .common import ChangePasswordCard, SmsCard, TopBar
-from .dashboard import DashboardPanel
+from .common import SmsCard, TopBar, change_password_button
 
 TAB_DASHBOARD, TAB_ALERTS, TAB_PROFILE = 0, 1, 2
 
@@ -18,88 +20,81 @@ class JanitorDashboard(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.topbar = TopBar("AureoClean · Janitor", nav.logout)
+        self.topbar = TopBar("AureoClean", nav.logout)
         root.addWidget(self.topbar)
 
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, 1)
 
-        # ---- Dashboard tab (first, so janitors see it straight after signing in)
-        self.dashboard = DashboardPanel("janitor")
-        self.tabs.addTab(self.dashboard, "Dashboard")
+        # ---- Dashboard tab: the shared Arduino dashboard is placed here on sign-in.
+        self.dash_tab = QWidget()
+        dl = QVBoxLayout(self.dash_tab)
+        dl.setContentsMargins(0, 0, 0, 0)
+        self.tabs.addTab(self.dash_tab, "Dashboard")
 
         # ---- Alerts tab
-        home = QWidget()
-        hl = QVBoxLayout(home)
-        hl.setContentsMargins(0, 0, 0, 0)
-        hl.setSpacing(12)
-        self.greeting = label("", "PageTitle")
-        hl.addWidget(self.greeting)
-
-        # Nudge to add a number for SMS alerts (hidden once verified).
+        alerts_page = QWidget()
+        al = QVBoxLayout(alerts_page)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(8)
         self.sms_nudge, nb = card()
         row = QHBoxLayout()
-        row.addWidget(label("Get restroom alerts by text message — add your mobile number.", wrap=True), 1)
+        row.addWidget(label("Get restroom alerts by text — add your mobile number.", wrap=True), 1)
         row.addWidget(button("Add number", "Gold", lambda: self.tabs.setCurrentIndex(TAB_PROFILE)))
         nb.addLayout(row)
-        hl.addWidget(self.sms_nudge)
-
+        al.addWidget(self.sms_nudge)
         alerts, ab = card()
         ab.addWidget(label("Restroom alerts", "Section"))
         self.alerts_body = label("", "Muted")
         ab.addWidget(self.alerts_body)
-        hl.addWidget(alerts)
+        al.addWidget(alerts)
+        al.addStretch(1)
+        self.tabs.addTab(scroll_page(alerts_page), "Alerts")
 
-        hl.addStretch(1)
-        self.tabs.addTab(scroll_page(home), "Alerts")
-
-        # ---- Profile tab
+        # ---- Profile tab: two columns
         profile = QWidget()
-        pl = QVBoxLayout(profile)
-        pl.setContentsMargins(0, 0, 0, 0)
-        pl.setSpacing(12)
+        grid = QGridLayout(profile)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+
         info, ib = card()
-        ib.addWidget(label("My profile", "Section"))
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(6)
+        self.greeting = label("", "Section")
+        ib.addWidget(self.greeting)
+        details = QGridLayout()
+        details.setHorizontalSpacing(12)
+        details.setVerticalSpacing(5)
         self.fields = {}
-        for row_i, (key, title) in enumerate([("fullName", "Full name"), ("username", "Username"),
-                                               ("email", "Email"), ("createdAt", "Member since")]):
-            grid.addWidget(label(title, "FieldLabel", wrap=False), row_i, 0)
+        for r, (key, title) in enumerate([("fullName", "Name"), ("username", "Username"),
+                                          ("email", "Email"), ("createdAt", "Member since")]):
+            details.addWidget(label(title, "FieldLabel", wrap=False), r, 0)
             value = label("")
-            grid.addWidget(value, row_i, 1)
+            details.addWidget(value, r, 1)
             self.fields[key] = value
-        grid.setColumnStretch(1, 1)
-        ib.addLayout(grid)
-        info.setMaximumWidth(460)
-        pl.addWidget(info)
-        self.sms = SmsCard(self.api, "Get restroom alerts by text message, even when you're away from this screen. "
-                                     "Add your number and confirm it with the code we text you.")
-        pl.addWidget(self.sms)
-        pl.addWidget(ChangePasswordCard(self.api))
-        pl.addStretch(1)
+        details.setColumnStretch(1, 1)
+        ib.addLayout(details)
+        ib.addSpacing(4)
+        ib.addWidget(change_password_button(self.api, self))
+        ib.addStretch(1)
+
+        self.sms = SmsCard(self.api, "Restroom alerts by text, even away from this screen.")
+        grid.addWidget(info, 0, 0)
+        grid.addWidget(self.sms, 0, 1)
+        grid.setColumnStretch(0, 5)
+        grid.setColumnStretch(1, 6)
+        grid.setRowStretch(1, 1)
         self.tabs.addTab(scroll_page(profile), "My profile")
-        self.tabs.currentChanged.connect(lambda i: i == TAB_ALERTS and self.load())
+        self.tabs.currentChanged.connect(lambda i: i in (TAB_ALERTS, TAB_PROFILE) and self.load())
 
     def enter(self, user: dict):
         self.topbar.set_user(user)
         first = (user.get("fullName") or user.get("username") or "").split(" ")[0]
         self.greeting.setText(f"Hello, {first}")
         self.sms.message.clear()
+        self.nav.dashboard.attach_to(self.dash_tab)
         self.tabs.blockSignals(True)
         self.tabs.setCurrentIndex(TAB_DASHBOARD)
         self.tabs.blockSignals(False)
         self.load()
-
-        def show(links):
-            url = next((link["url"] for link in links if link.get("key") == "dashboard"), "")
-            self.dashboard.show_url(url)
-
-        run_async(self.api.links, show, lambda e: self.dashboard.show_url(""))
-
-    def leave(self):
-        self.dashboard.leave()
 
     def load(self):
         self.alerts_body.setText("Loading…")

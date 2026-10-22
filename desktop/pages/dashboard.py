@@ -1,39 +1,38 @@
-"""Arduino IoT Cloud dashboard shown automatically after sign-in.
+"""Arduino IoT Cloud dashboard, built into the app for admins and janitors.
 
-Two ways to show it, chosen automatically:
+There is ONE dashboard view for the whole app. The admin and janitor screens
+both show it in their "Dashboard" tab (the widget is moved between them), so
+the page stays loaded and the Arduino sign-in is shared.
 
-1. Inside the AureoClean window (Qt WebEngine), when it is installed.
-2. Otherwise in its own Chromium "app" window (no address bar or tabs),
-   opened automatically at sign-in and closed again at sign-out.
-
-Both use a separate browser profile kept on the Pi, so whoever signs in to
-Arduino there once stays signed in, and it is kept apart from the admin's
-normal Chromium.
+Staying signed in: Arduino's sign-in cookie is a "session" cookie, which a
+normal browser deletes when it closes. Here it is forced to be saved to disk
+(ForcePersistentCookies), so you sign in to Arduino once and it survives
+signing out of AureoClean and restarting the Pi.
 """
 from __future__ import annotations
 
 import os
-import shutil
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import QSettings, QTimer, QUrl
 from PySide6.QtWidgets import QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
 
 from ..widgets import button, card, label
-from .common import BROWSERS, _make_room, open_in_browser
 
-PROFILE_ROOT = Path(os.environ.get("AUREOCLEAN_DATA_DIR", "~/.local/share/aureoclean")).expanduser() / "browser"
+PROFILE_DIR = Path(os.environ.get("AUREOCLEAN_DATA_DIR", "~/.local/share/aureoclean")).expanduser() / "browser" / "dashboard"
 
-# Pages the embedded view may visit: Arduino Cloud and its sign-in pages.
-ALLOWED_HOSTS = ("arduino.cc", "arduino.tips", "google.com", "gstatic.com", "apple.com", "github.com")
+# Pages the view may open: Arduino Cloud and the sign-in providers it uses.
+ALLOWED_HOSTS = ("arduino.cc", "arduino.tips", "google.com", "gstatic.com", "googleusercontent.com",
+                 "apple.com", "github.com")
 
-# How long a failed in-app load may last before switching to a Chromium window.
-# (Arduino Cloud redirects to its sign-in page straight away, and Qt reports
-# that interrupted first load as a "failure" even though the next one works.)
-FALLBACK_AFTER_MS = 6000
+# Qt reports the first load as failed when Arduino immediately redirects to
+# its sign-in page; only complain if nothing has loaded after this long.
+FAIL_AFTER_MS = 8000
+ZOOM_STEPS = (0.5, 0.6, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25)
 
-try:  # Qt WebEngine is optional; not every Raspberry Pi install has it.
+try:  # Qt WebEngine is installed by setup_pi.sh when the Pi supports it.
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
     from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -42,207 +41,158 @@ except ImportError:  # pragma: no cover - depends on the install
     HAS_WEBENGINE = False
 
 
-def embedding_enabled() -> bool:
-    return HAS_WEBENGINE and os.environ.get("AUREOCLEAN_DASHBOARD_EMBED", "1").strip() != "0"
-
-
 def _host_allowed(url: QUrl) -> bool:
-    host = (url.host() or "").lower()
     if url.scheme() in ("about", "data", "blob"):
         return True
+    host = (url.host() or "").lower()
     return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
 
 
 if HAS_WEBENGINE:
 
-    class _LockedPage(QWebEnginePage):
-        """Stays on Arduino Cloud: other sites are not opened inside the app."""
+    class _DashboardPage(QWebEnginePage):
+        """Stays on Arduino Cloud; pop-ups (e.g. sign-in) open in the same view."""
 
         def acceptNavigationRequest(self, url, nav_type, is_main_frame):  # noqa: N802 (Qt name)
             if is_main_frame and not _host_allowed(url):
                 return False
             return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
-        def createWindow(self, _type):  # noqa: N802 - pop-ups open in the same view
+        def createWindow(self, _type):  # noqa: N802 (Qt name)
             return self
 
-    _PROFILES: dict[str, "QWebEngineProfile"] = {}
-
-    def _profile(name: str) -> "QWebEngineProfile":
-        if name not in _PROFILES:
-            from PySide6.QtWidgets import QApplication
-
-            profile = QWebEngineProfile(f"aureoclean-{name}", QApplication.instance())
-            path = PROFILE_ROOT / f"embedded-{name}"
-            path.mkdir(parents=True, exist_ok=True)
-            profile.setPersistentStoragePath(str(path))
-            profile.setCachePath(str(path / "cache"))
-            profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
-            _PROFILES[name] = profile
-        return _PROFILES[name]
+    def _make_profile(parent) -> "QWebEngineProfile":
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        profile = QWebEngineProfile("aureoclean-dashboard", parent)
+        profile.setPersistentStoragePath(str(PROFILE_DIR))
+        profile.setCachePath(str(PROFILE_DIR / "cache"))
+        # Keep Arduino's sign-in even though it is a session cookie.
+        profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        # Look like a normal Chrome so Google / Arduino sign-in pages accept it.
+        profile.setHttpUserAgent(re.sub(r"\s*QtWebEngine/\S+", "", profile.httpUserAgent()))
+        return profile
 
 
 class DashboardPanel(QWidget):
-    """Shows the monitoring dashboard. Call ``show_url`` after sign-in and ``leave`` at sign-out."""
+    """The single, shared dashboard view. Create once; call ``set_url`` and ``attach_to``."""
 
-    def __init__(self, profile_name: str):
+    def __init__(self):
         super().__init__()
-        self.profile_name = profile_name
         self.url = ""
-        self.window_proc: QProcess | None = None
-        self.fell_back = False  # embedded view gave up this session -> use the Chromium window
-        self._fail_timer = QTimer(self)
-        self._fail_timer.setSingleShot(True)
-        self._fail_timer.timeout.connect(self._embedded_failed)
+        self.settings = QSettings("AureoClean", "desktop")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 8, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(6, 4, 6, 6)
+        root.setSpacing(4)
 
         bar = QHBoxLayout()
-        bar.addWidget(label("Live restroom monitoring", "Section", wrap=False))
+        bar.setSpacing(6)
         self.status = label("", "Muted", wrap=False)
-        bar.addWidget(self.status)
-        bar.addStretch(1)
-        self.reload_btn = button("Reload", on_click=self.reload)
-        self.window_btn = button("Open in separate window", on_click=self.open_window)
-        bar.addWidget(self.reload_btn)
-        bar.addWidget(self.window_btn)
+        bar.addWidget(self.status, 1)
+        self.zoom_out = button("A−", "Small", lambda: self._zoom(-1))
+        self.zoom_in = button("A+", "Small", lambda: self._zoom(+1))
+        self.reload_btn = button("⟳ Reload", "Small", self.reload)
+        for b in (self.zoom_out, self.zoom_in, self.reload_btn):
+            bar.addWidget(b)
         root.addLayout(bar)
 
         self.stack = QStackedWidget()
         root.addWidget(self.stack, 1)
 
-        # Page 0: message card (not configured / opened in its own window / error)
-        msg_holder = QWidget()
-        ml = QVBoxLayout(msg_holder)
-        ml.setContentsMargins(0, 0, 0, 0)
-        self.msg_frame, mb = card()
+        # Page 0: message (not set up / viewer missing)
+        holder = QWidget()
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        frame, body = card()
         self.msg_title = label("", "Section")
         self.msg_body = label("", "Muted")
-        self.msg_action = button("Show dashboard", "Primary", self.open_window)
-        mb.addWidget(self.msg_title)
-        mb.addWidget(self.msg_body)
-        mb.addWidget(self.msg_action, 0, Qt.AlignLeft)
-        ml.addWidget(self.msg_frame)
-        ml.addStretch(1)
-        self.stack.addWidget(msg_holder)
+        body.addWidget(self.msg_title)
+        body.addWidget(self.msg_body)
+        hl.addWidget(frame)
+        hl.addStretch(1)
+        self.stack.addWidget(holder)
 
-        # Page 1: embedded web view
         self.view = None
-        if embedding_enabled():
+        self._fail_timer = QTimer(self)
+        self._fail_timer.setSingleShot(True)
+        self._fail_timer.timeout.connect(self._really_failed)
+        if HAS_WEBENGINE:
+            self.profile = _make_profile(self)
             self.view = QWebEngineView()
-            self.view.setPage(_LockedPage(_profile(profile_name), self.view))
+            page = _DashboardPage(self.profile, self.view)
+            self.view.setPage(page)
             self.view.loadStarted.connect(lambda: self.status.setText("Loading…"))
             self.view.loadFinished.connect(self._load_finished)
+            page.renderProcessTerminated.connect(lambda *_: QTimer.singleShot(1000, self.reload))
+            self.view.setZoomFactor(self._saved_zoom())
             self.stack.addWidget(self.view)
 
     # ------------------------------------------------------------------ public
-    def show_url(self, url: str) -> None:
-        """Called after sign-in with the configured dashboard link (may be empty)."""
+    def attach_to(self, container: QWidget) -> None:
+        """Show the shared dashboard inside ``container`` (a tab of the admin or janitor screen)."""
+        if self.parentWidget() is not container:
+            old = self.parentWidget()
+            if old is not None and old.layout() is not None:
+                old.layout().removeWidget(self)
+            container.layout().addWidget(self)
+        self.show()
+
+    def set_url(self, url: str) -> None:
         url = (url or "").strip()
-        self.url = url
-        has_url = bool(url) and urlparse(url).scheme in ("http", "https")
-        self.reload_btn.setVisible(has_url and self.view is not None)
-        self.window_btn.setVisible(has_url)
+        valid = bool(url) and urlparse(url).scheme in ("http", "https")
+        for b in (self.zoom_out, self.zoom_in, self.reload_btn):
+            b.setVisible(valid and self.view is not None)
 
-        if not has_url:
-            self._message(
-                "Dashboard not set up yet",
-                "The Arduino IoT Cloud dashboard link hasn't been added. An administrator puts it in "
-                "~/.config/aureoclean/aureoclean.env as AUREOCLEAN_DASHBOARD_URL=… and restarts the app.",
-                action=False,
-            )
+        if not valid:
+            self.url = ""
+            self._message("Dashboard not set up yet",
+                          "An administrator adds the Arduino IoT Cloud dashboard link to "
+                          "~/.config/aureoclean/aureoclean.env as AUREOCLEAN_DASHBOARD_URL=… and restarts the app.")
+            return
+        if self.view is None:
+            self.url = url
+            self._message("Dashboard viewer not installed",
+                          "The in-app web viewer (Qt WebEngine) is missing on this Pi. "
+                          "Run ./setup_pi.sh once to install it, then restart AureoClean.")
             return
 
-        if self.view is not None and not self.fell_back:
-            self.stack.setCurrentWidget(self.view)
-            if self.view.url().toString() != url:
-                self.view.load(QUrl(url))
-            return
+        self.stack.setCurrentWidget(self.view)
+        if url != self.url or self.view.url().isEmpty():
+            self.url = url
+            self.view.load(QUrl(url))
 
-        # No embedded browser (or it didn't work): open the dashboard in its own window right away.
-        self._show_in_window()
-
-    def _show_in_window(self) -> None:
-        self.reload_btn.setVisible(False)
-        if self.open_window():
-            self._message(
-                "Dashboard opened in its own window",
-                "The live dashboard is in a separate window. If you closed it or it's hidden "
-                "behind this one, press the button below.",
-            )
-
-    def leave(self) -> None:
-        """Called at sign-out: stop showing the dashboard."""
-        self._fail_timer.stop()
-        if self.view is not None:
-            self.view.stop()
-            self.view.setUrl(QUrl("about:blank"))
-        if self.window_proc is not None and self.window_proc.state() != QProcess.NotRunning:
-            self.window_proc.terminate()
-            if not self.window_proc.waitForFinished(2000):
-                self.window_proc.kill()
-        self.window_proc = None
-        self.status.setText("")
-
-    # ------------------------------------------------------------------ internals
     def reload(self) -> None:
         if self.view is not None and self.url:
             self.view.load(QUrl(self.url))
+
+    # ------------------------------------------------------------------ internals
+    def _message(self, title: str, body: str) -> None:
+        self.msg_title.setText(title)
+        self.msg_body.setText(body)
+        self.status.setText("")
+        self.stack.setCurrentIndex(0)
 
     def _load_finished(self, ok: bool) -> None:
         if ok:
             self._fail_timer.stop()
             self.status.setText("")
         elif not self._fail_timer.isActive():
-            # Often just a redirect (e.g. to Arduino's sign-in page). Give the next load a chance.
-            self._fail_timer.start(FALLBACK_AFTER_MS)
+            self._fail_timer.start(FAIL_AFTER_MS)
 
-    def _embedded_failed(self) -> None:
-        """The in-app view really didn't load: show the dashboard in a Chromium window instead."""
-        if not self.url or self.fell_back:
+    def _really_failed(self) -> None:
+        self.status.setText("Couldn't load the dashboard. Check the Wi-Fi, then press Reload.")
+
+    def _saved_zoom(self) -> float:
+        try:
+            return float(self.settings.value("dashboardZoom", 0.8))
+        except (TypeError, ValueError):
+            return 0.8
+
+    def _zoom(self, direction: int) -> None:
+        if self.view is None:
             return
-        self.fell_back = True
-        if self.view is not None:
-            self.view.stop()
-        self.status.setText("")
-        self._show_in_window()
-
-    def _message(self, title: str, body: str, action: bool = True) -> None:
-        self.msg_title.setText(title)
-        self.msg_body.setText(body)
-        self.msg_action.setVisible(action)
-        self.stack.setCurrentIndex(0)
-
-    def open_window(self) -> bool:
-        """Open the dashboard in a Chromium app window (its own profile). Returns True on success."""
-        if not self.url:
-            return False
-        # If it's already open, launching again with the same profile just brings it to the front.
-        chromium = next((shutil.which(b) for b in BROWSERS[:2] if shutil.which(b)), None)
-        if chromium is None:
-            # No Chromium: fall back to whatever browser exists.
-            open_in_browser(self.url, self)
-            return True
-        profile_dir = PROFILE_ROOT / f"window-{self.profile_name}"
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        proc = QProcess(self)
-        proc.setProgram(chromium)
-        proc.setArguments([
-            f"--app={self.url}",
-            f"--user-data-dir={profile_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-features=Vulkan",
-            "--start-maximized",
-        ])
-        proc.start()
-        if not proc.waitForStarted(5000):
-            self._message("Couldn't open the dashboard",
-                          f"Chromium didn't start. Open Chromium and go to:\n{self.url}")
-            return False
-        self.window_proc = proc
-        if self.window().isFullScreen():
-            _make_room(self)  # a full-screen AureoClean window would cover the dashboard
-        return True
+        current = self.view.zoomFactor()
+        index = min(range(len(ZOOM_STEPS)), key=lambda i: abs(ZOOM_STEPS[i] - current))
+        index = max(0, min(len(ZOOM_STEPS) - 1, index + direction))
+        self.view.setZoomFactor(ZOOM_STEPS[index])
+        self.settings.setValue("dashboardZoom", ZOOM_STEPS[index])

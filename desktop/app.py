@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QLineEdit, QMai
 
 from .api import ApiClient, ApiError
 from .pages.admin import AdminDashboard
+from .pages.dashboard import DashboardPanel
 from .pages.auth import ActivatePage, AdminRegisterPage, JanitorRequestPage, LoginPage, StatusPage
 from .pages.janitor import JanitorDashboard
 from .theme import STYLESHEET
@@ -33,10 +34,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AureoClean")
         self.setMinimumSize(640, 400)
-        self.resize(1024, 600)
+        self.resize(800, 480)  # the project's 7-inch display
         self.api = ApiClient()
         self.user = None
 
+        # One Arduino dashboard for the whole app, shown in both the admin and janitor screens.
+        self.dashboard = DashboardPanel()
         self.stack = QStackedWidget()
         self.stack.setObjectName("Root")
         self.setCentralWidget(self.stack)
@@ -77,14 +80,14 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.pages[name])
         self.pages[name].enter(user)
 
-    def _leave_dashboards(self):
-        for page in self.pages.values():
-            if hasattr(page, "leave"):
-                page.leave()
+        def show(links):
+            url = next((link["url"] for link in links if link.get("key") == "dashboard"), "")
+            self.dashboard.set_url(url)
+
+        run_async(self.api.links, show, lambda e: self.dashboard.set_url(""))
 
     def logout(self):
-        self._leave_dashboards()
-
+        # The dashboard stays loaded (and signed in to Arduino) for the next person.
         def done(*_):
             self.user = None
             self.show_login()
@@ -97,7 +100,6 @@ class MainWindow(QMainWindow):
             return False
         self.api.token = None
         self.user = None
-        self._leave_dashboards()
         self.show_login()
         self.pages["login"].message.error(error.message)
         return True
@@ -134,7 +136,6 @@ def main() -> int:
         window.showMaximized()
     else:
         window.show()
-    app.aboutToQuit.connect(window._leave_dashboards)  # close the dashboard window too
     return app.exec()
 
 
