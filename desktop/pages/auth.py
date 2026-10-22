@@ -92,6 +92,9 @@ class LoginPage(_FormPage):
         self.submit = button("Sign in", "Primary", self.do_login)
         self.busy = BusyButton(self.submit, "Signing in…")
         self.finish_form(self.submit)
+        self.resend_btn = button("Resend verification email", "Link", self.do_resend)
+        self.resend_btn.hide()
+        self.body.addWidget(self.resend_btn)
         self.service_status = label("Checking connection to the AureoClean service…", "Muted")
         self.body.addWidget(self.service_status)
         self.body.addStretch(1)
@@ -136,6 +139,7 @@ class LoginPage(_FormPage):
 
     def prefill(self, identifier: str = "", note: str = ""):
         self.reset()
+        self.resend_btn.hide()
         if identifier:
             self.identifier.edit.setText(identifier)
             self.password.edit.setFocus()
@@ -167,11 +171,25 @@ class LoginPage(_FormPage):
             self.nav.signed_in(result["user"])
 
         def err(e):
-            self.password.clear()
+            needs_verify = "verify your email" in e.message.lower()
+            self.resend_btn.setVisible(needs_verify)
+            if not needs_verify:  # keep the password so "Resend" can use it
+                self.password.clear()
             self.message.error(e.message)
             self.password.edit.setFocus()
 
+        self.resend_btn.hide()
         run_async(lambda: self.api.login(ident, pw), ok, err, self.busy.stop)
+
+    def do_resend(self):
+        ident, pw = self.identifier.value(), self.password.text()
+        self.resend_btn.setEnabled(False)
+
+        def ok(result):
+            self.message.success(result["message"])
+
+        run_async(lambda: self.api.resend_verification(ident, pw), ok,
+                  lambda e: self.message.error(e.message), lambda: self.resend_btn.setEnabled(True))
 
 
 # ======================================================================= janitor request

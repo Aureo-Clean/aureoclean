@@ -13,6 +13,7 @@ import requests
 from .base import AccountDisabled, AccountExists, AlreadyExists, ProviderError
 
 SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+SEND_OOB_URL = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode"
 
 
 def _friendly(exc: Exception) -> ProviderError:
@@ -57,6 +58,8 @@ def _guard_firestore(cls):
 
 @_guard_firestore
 class FirebaseBackend:
+    supports_email_verification = True
+
     def __init__(self, project_id: str, web_api_key: str, credentials_path: str):
         try:
             import firebase_admin
@@ -93,7 +96,8 @@ class FirebaseBackend:
         return snap.to_dict() if snap.exists else None
 
     def create(self, collection: str, doc_id: str, data: dict) -> None:
-        from google.api_core.exceptions import AlreadyExists as GAlreadyExists, Conflict
+        from google.api_core.exceptions import AlreadyExists as GAlreadyExists
+        from google.api_core.exceptions import Conflict
 
         try:
             self._ref(collection, doc_id).create(data)
@@ -188,3 +192,28 @@ class FirebaseBackend:
 
     def delete_account(self, uid: str) -> None:
         self._auth.delete_user(uid, app=self._app)
+
+    def send_verification_email(self, email: str, password: str) -> None:
+        """Firebase sends its standard "Verify your email" message (template in
+        Firebase Console > Authentication > Templates)."""
+        try:
+            resp = self._http.post(SIGN_IN_URL, params={"key": self._api_key},
+                                   json={"email": email, "password": password, "returnSecureToken": True}, timeout=15)
+            resp.raise_for_status()
+            id_token = resp.json()["idToken"]
+            resp = self._http.post(SEND_OOB_URL, params={"key": self._api_key},
+                                   json={"requestType": "VERIFY_EMAIL", "idToken": id_token}, timeout=15)
+        except (requests.RequestException, KeyError, ValueError) as exc:
+            raise ProviderError("Couldn't send the verification email. Check the internet connection.") from exc
+        if not resp.ok:
+            message = ""
+            try:
+                message = resp.json().get("error", {}).get("message", "")
+            except ValueError:
+                pass
+            if message.startswith("TOO_MANY_ATTEMPTS"):
+                raise ProviderError("Too many emails sent. Wait a few minutes, then try again.")
+            raise ProviderError(f"Couldn't send the verification email ({message or resp.status_code}).")
+
+    def is_email_verified(self, uid: str) -> bool:
+        return bool(self._auth.get_user(uid, app=self._app).email_verified)

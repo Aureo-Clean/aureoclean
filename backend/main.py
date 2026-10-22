@@ -133,6 +133,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def login(body: LoginBody):
         return svc().login(body.identifier, body.password)
 
+    @app.post("/auth/resend-verification")
+    def resend_verification(body: LoginBody):
+        return svc().resend_verification(body.identifier, body.password)
+
     @app.post("/register/janitor")
     def register_janitor(body: JanitorRequestBody):
         return svc().submit_janitor_request(body.fullName, body.username, body.email, body.phone)

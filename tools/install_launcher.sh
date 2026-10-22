@@ -31,7 +31,7 @@ Name=AureoClean
 Comment=Restroom hygiene monitoring
 Exec=\"$APP_DIR/run_local.sh\" --maximized
 Path=$APP_DIR
-Icon=$APP_DIR/desktop/assets/icon.svg
+Icon=$APP_DIR/desktop/assets/icon-256.png
 Terminal=false
 Categories=Utility;
 StartupNotify=true
@@ -62,6 +62,9 @@ install_entry() {  # $1 = file name, $2 = contents
 
 install_entry "$NAME" "$ENTRY"
 install_entry "$UPDATE_NAME" "$UPDATE_ENTRY"
+
+# Ask the desktop to redraw so a changed icon shows straight away.
+command -v pcmanfm >/dev/null && pcmanfm --reconfigure >/dev/null 2>&1 || true
 echo "Added AureoClean and Update AureoClean to the desktop and the menu (under Accessories)."
 
 if [ "${1:-}" = "--autostart" ]; then

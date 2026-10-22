@@ -17,6 +17,7 @@ Accounts and roles
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 import threading
 from dataclasses import dataclass
@@ -24,13 +25,13 @@ from datetime import datetime
 from typing import Optional
 
 from .config import Settings
-from .sms import LogSender, SmsError, SmsSender, mask_phone, normalize_phone
 from .providers.base import (
     AccountDisabled,
     AccountExists,
     AlreadyExists,
     DocStore,
     Identity,
+    ProviderError,
 )
 from .security import (
     FailureTracker,
@@ -54,6 +55,7 @@ from .security import (
     validate_username,
     verify_secret,
 )
+from .sms import LogSender, SmsError, SmsSender, mask_phone, normalize_phone
 
 ROLE_ADMIN = "admin"
 ROLE_JANITOR = "janitor"
@@ -119,12 +121,23 @@ class Session:
 
 
 class SessionManager:
-    """In-memory sessions. Restarting the backend signs everyone out."""
+    """Sign-in sessions, saved in the database so restarting the backend
+    (or the Pi) doesn't sign anyone out.
 
-    def __init__(self, hours: int):
+    Only a SHA-256 hash of each token is stored, so someone reading the
+    database can't use it to sign in. A small in-memory cache avoids a
+    database read on every request."""
+
+    def __init__(self, hours: int, store: Optional[DocStore] = None, collection: str = "aureoSessions"):
         self.hours = hours
-        self._sessions: dict[str, Session] = {}
+        self.store = store
+        self.collection = collection
+        self._cache: dict[str, Session] = {}
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
 
     def create(self, profile: dict) -> Session:
         session = Session(
@@ -136,26 +149,54 @@ class SessionManager:
             email=profile["email"],
             expires_at=parse_iso(iso_in(self.hours)),
         )
+        if self.store is not None:
+            self.store.set(self.collection, self._key(session.token), {
+                "uid": session.uid, "role": session.role, "username": session.username,
+                "fullName": session.full_name, "email": session.email,
+                "expiresAt": iso(session.expires_at), "createdAt": iso(utcnow()),
+            })
+            self._drop_expired(session.uid)
         with self._lock:
-            self._sessions[session.token] = session
+            self._cache[session.token] = session
         return session
 
     def get(self, token: str) -> Optional[Session]:
+        if not token:
+            return None
         with self._lock:
-            session = self._sessions.get(token or "")
-            if session and session.expires_at <= utcnow():
-                del self._sessions[session.token]
-                return None
-            return session
+            session = self._cache.get(token)
+        if session is None and self.store is not None:
+            doc = self.store.get(self.collection, self._key(token))
+            if doc:
+                session = Session(token=token, uid=doc["uid"], role=doc["role"], username=doc["username"],
+                                  full_name=doc.get("fullName", ""), email=doc["email"],
+                                  expires_at=parse_iso(doc["expiresAt"]))
+                with self._lock:
+                    self._cache[token] = session
+        if session and session.expires_at <= utcnow():
+            self.revoke(token)
+            return None
+        return session
 
     def revoke(self, token: str) -> None:
         with self._lock:
-            self._sessions.pop(token, None)
+            self._cache.pop(token, None)
+        if self.store is not None and token:
+            self.store.delete(self.collection, self._key(token))
 
     def revoke_user(self, uid: str) -> None:
         with self._lock:
-            for token in [t for t, s in self._sessions.items() if s.uid == uid]:
-                del self._sessions[token]
+            for token in [t for t, s in self._cache.items() if s.uid == uid]:
+                del self._cache[token]
+        if self.store is not None:
+            for doc_id, _ in self.store.query(self.collection, uid=uid):
+                self.store.delete(self.collection, doc_id)
+
+    def _drop_expired(self, uid: str) -> None:
+        """Tidy up this user's old, expired sessions."""
+        for doc_id, doc in self.store.query(self.collection, uid=uid):
+            if parse_iso(doc["expiresAt"]) <= utcnow():
+                self.store.delete(self.collection, doc_id)
 
 
 # ---------------------------------------------------------------- helpers
@@ -192,7 +233,8 @@ class AureoService:
         self.C_REQUESTS = f"{prefix}RegistrationRequests"
         self.C_INVITES = f"{prefix}AdminInvites"
         self.C_AUDIT = f"{prefix}AuditLogs"
-        self.sessions = SessionManager(settings.session_hours)
+        self.C_SESSIONS = f"{prefix}Sessions"
+        self.sessions = SessionManager(settings.session_hours, store, self.C_SESSIONS)
         self.login_failures = FailureTracker(settings.max_login_failures, settings.login_lockout_minutes)
         # Guessing activation / invite codes: 10 wrong tries per key per 15 min.
         self.code_failures = FailureTracker(10, 15)
@@ -468,10 +510,38 @@ class AureoService:
         if wait:
             raise TooManyAttempts(f"Too many failed attempts. Try again in {max(1, wait // 60)} minute(s).")
 
-        generic = Unauthorized("Incorrect username/email or password.")
         if not ident or not password:
             raise BadRequest("Enter your username (or email) and password.")
+        email, uid = self._check_credentials(ident, password, key)
 
+        profile = self.store.get(self.C_USERS, uid)
+        if not profile:
+            raise Forbidden(
+                "This sign-in account is not set up in AureoClean yet. "
+                "An administrator can link it with tools/create_admin.py --link-existing."
+            )
+        if profile.get("status") != "active":
+            raise Forbidden("This account has been disabled. Contact an administrator.")
+        if profile.get("emailVerifyRequired"):
+            if not self.identity.is_email_verified(uid):
+                self.login_failures.reset(key)
+                raise Forbidden(
+                    f"Please verify your email first: open the link we sent to {email}, then sign in again. "
+                    "(Didn't get it? Use “Resend verification email”.)")
+            profile.pop("emailVerifyRequired", None)
+            profile["emailVerifiedAt"] = iso(utcnow())
+            self.audit("admin_email_verified", {"type": profile["role"], "uid": uid, "username": profile["username"]}, uid)
+
+        self.login_failures.reset(key)
+        profile["lastLoginAt"] = iso(utcnow())
+        self.store.set(self.C_USERS, uid, profile)
+        session = self.sessions.create(profile)
+        self.audit("login", session.actor, uid)
+        return {"token": session.token, "expiresAt": iso(session.expires_at), "user": _public_profile(profile)}
+
+    def _check_credentials(self, ident: str, password: str, key: str) -> tuple[str, str]:
+        """Resolve a username or email and check the password. Returns (email, uid)."""
+        generic = Unauthorized("Incorrect username/email or password.")
         if "@" in ident:
             email = normalize_email(ident)
         else:
@@ -497,22 +567,29 @@ class AureoService:
         if not uid:
             self.login_failures.record_failure(key)
             raise generic
+        return email, uid
 
-        profile = self.store.get(self.C_USERS, uid)
-        if not profile:
-            raise Forbidden(
-                "This sign-in account is not set up in AureoClean yet. "
-                "An administrator can link it with tools/create_admin.py --link-existing."
-            )
-        if profile.get("status") != "active":
-            raise Forbidden("This account has been disabled. Contact an administrator.")
-
-        self.login_failures.reset(key)
-        profile["lastLoginAt"] = iso(utcnow())
-        self.store.set(self.C_USERS, uid, profile)
-        session = self.sessions.create(profile)
-        self.audit("login", session.actor, uid)
-        return {"token": session.token, "expiresAt": iso(session.expires_at), "user": _public_profile(profile)}
+    def resend_verification(self, identifier: str, password: str) -> dict:
+        ident = (identifier or "").strip()
+        key = f"login:{ident.lower()}"
+        if self.login_failures.locked_for(key):
+            raise TooManyAttempts("Too many failed attempts. Try again later.")
+        if not ident or not password:
+            raise BadRequest("Enter your username (or email) and password first.")
+        email, uid = self._check_credentials(ident, password, key)
+        profile = self.store.get(self.C_USERS, uid) or {}
+        if not profile.get("emailVerifyRequired") or self.identity.is_email_verified(uid):
+            return {"message": "Your email is already verified. You can sign in."}
+        send_key = f"verify:{uid}"
+        if self.sms_sends.locked_for(send_key):
+            raise TooManyAttempts("A verification email was sent recently. Check your inbox (and Spam) first.")
+        try:
+            self.identity.send_verification_email(email, password)
+        except ProviderError as exc:
+            raise ServiceUnavailable(str(exc))
+        self.sms_sends.record_failure(send_key)
+        self.audit("verification_email_sent", {"type": profile.get("role", ""), "uid": uid}, uid)
+        return {"message": f"Verification email sent to {email}. Open the link, then sign in."}
 
     def logout(self, session: Session) -> None:
         self.sessions.revoke(session.token)
@@ -630,7 +707,10 @@ class AureoService:
                     "An account already exists for this email. Ask an administrator to link it "
                     "with tools/create_admin.py --link-existing instead."
                 )
-            profile = self._create_user(full_name, username, email, password, ROLE_ADMIN, {"inviteId": invite_id[:12]})
+            extra = {"inviteId": invite_id[:12]}
+            if self.identity.supports_email_verification:
+                extra["emailVerifyRequired"] = True
+            profile = self._create_user(full_name, username, email, password, ROLE_ADMIN, extra)
         except Exception:
             self.store.transact(self.C_INVITES, invite_id, unclaim)
             raise
@@ -643,7 +723,15 @@ class AureoService:
         self.store.transact(self.C_INVITES, invite_id, used)
         self.code_failures.reset(key)
         self.audit("admin_registered", {"type": ROLE_ADMIN, "uid": profile["uid"], "username": username}, profile["uid"], {"inviteId": invite_id[:12]})
-        return {"username": username, "message": "Admin account created. You can now sign in."}
+        if not profile.get("emailVerifyRequired"):
+            return {"username": username, "message": "Admin account created. You can now sign in."}
+        try:
+            self.identity.send_verification_email(email, password)
+            self.sms_sends.record_failure(f"verify:{profile['uid']}")
+            note = f"We sent a verification link to {email}. Open it, then sign in."
+        except ProviderError:
+            note = "We couldn't send the verification email just now: sign in and choose “Resend verification email”."
+        return {"username": username, "message": f"Admin account created. {note}"}
 
     def _create_user(
         self, full_name: str, username: str, email: str, password: Optional[str], role: str,

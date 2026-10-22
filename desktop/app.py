@@ -126,7 +126,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("AureoClean")
     app.setDesktopFileName("aureoclean")
-    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "icon.svg")))
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "icon-256.png")))
     app.setStyleSheet(STYLESHEET)
     app.focusChanged.connect(keep_focus_visible)
     window = MainWindow()

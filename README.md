@@ -221,7 +221,13 @@ tests/
 ```
 
 ## Known limits (for the next modules)
-- Sessions live in the backend's memory: restarting the backend signs everyone out.
-- Activation codes are handed over in person (they could be texted later, but a janitor has no verified number until after sign-up).
-- Admin email ownership isn't verified by a link — the email-locked invite (handed over by an existing admin) is the check. Add Firebase email verification before a real deployment.
-- The janitor home's alerts are a placeholder until the Realtime Database sensor paths are wired in.
+- ~~Sessions live in memory~~ — **done:** sessions are saved (hashed) in the database and survive restarts.
+- ~~Admin email not verified~~ — **done (Firebase mode):** admins who register with an invite must open the
+  verification link Firebase emails them before they can sign in ("Resend verification email" on the sign-in
+  screen). The first admin made with `tools/create_admin.py` is trusted and skips this.
+- Activation codes are handed over in person: a janitor has no verified number before activation.
+  Could be added by asking for an optional mobile number at sign-up.
+- Restroom alerts are a placeholder until the Realtime Database sensor paths are wired in.
+- Google sign-in inside the dashboard relies on a browser-identity "quirk" (like the qutebrowser browser uses).
+  If Google ever blocks it again, sign in to Arduino with email + password, or use a separate
+  Arduino account (email + password) that the dashboard is shared with.

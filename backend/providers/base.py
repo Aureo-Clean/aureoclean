@@ -69,3 +69,11 @@ class Identity(Protocol):
 
     def delete_account(self, uid: str) -> None:
         """Only used to roll back an account created moments earlier."""
+
+    # Email verification (Firebase sends the email; local mode has no email).
+    supports_email_verification: bool
+
+    def send_verification_email(self, email: str, password: str) -> None:
+        """Email a "verify your address" link. Raise ProviderError on failure."""
+
+    def is_email_verified(self, uid: str) -> bool: ...

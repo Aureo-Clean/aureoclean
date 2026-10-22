@@ -14,5 +14,6 @@ service cloud.firestore {
     match /aureoRegistrationRequests/{doc=**}  { allow read, write: if false; }
     match /aureoAdminInvites/{doc=**}          { allow read, write: if false; }
     match /aureoAuditLogs/{doc=**}             { allow read, write: if false; }
+    match /aureoSessions/{doc=**}              { allow read, write: if false; }
   }
 }

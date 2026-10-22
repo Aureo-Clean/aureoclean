@@ -53,6 +53,8 @@ ACTION_LABELS = {
     "sms_alerts_on": "SMS alerts turned on",
     "sms_alerts_off": "SMS alerts turned off",
     "sms_test_sent": "Test SMS sent",
+    "admin_email_verified": "Admin email verified",
+    "verification_email_sent": "Verification email sent",
 }
 
 

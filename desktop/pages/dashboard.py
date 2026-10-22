@@ -11,6 +11,7 @@ signing out of AureoClean and restarting the Pi.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -32,8 +33,30 @@ ALLOWED_HOSTS = ("arduino.cc", "arduino.tips", "google.com", "gstatic.com", "goo
 FAIL_AFTER_MS = 8000
 ZOOM_STEPS = (0.5, 0.6, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25)
 
+# Google refuses to sign in inside embedded web views ("This browser or app may
+# not be secure"). Like the qutebrowser browser (also built on Qt WebEngine),
+# present Firefox's identity on Google's sign-in pages only. Everything else
+# sees the normal engine.
+GOOGLE_SIGNIN_HOSTS = ("accounts.google.com", "accounts.youtube.com")
+FIREFOX_UA = "Mozilla/5.0 (X11; Linux aarch64; rv:140.0) Gecko/20100101 Firefox/140.0"
+_NAVIGATOR_QUIRK = """
+(function () {
+  if (!%(hosts)s.includes(location.hostname)) return;
+  var ua = %(ua)s;
+  var props = {userAgent: ua, appVersion: "5.0 (X11)", vendor: "", platform: "Linux aarch64", userAgentData: undefined};
+  Object.keys(props).forEach(function (k) {
+    try { Object.defineProperty(Navigator.prototype, k, {get: function () { return props[k]; }, configurable: true}); } catch (e) {}
+  });
+})();
+"""
+
 try:  # Qt WebEngine is installed by setup_pi.sh when the Pi supports it.
-    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+    from PySide6.QtWebEngineCore import (
+        QWebEnginePage,
+        QWebEngineProfile,
+        QWebEngineScript,
+        QWebEngineUrlRequestInterceptor,
+    )
     from PySide6.QtWebEngineWidgets import QWebEngineView
 
     HAS_WEBENGINE = True
@@ -61,6 +84,11 @@ if HAS_WEBENGINE:
         def createWindow(self, _type):  # noqa: N802 (Qt name)
             return self
 
+    class _GoogleSignInQuirk(QWebEngineUrlRequestInterceptor):
+        def interceptRequest(self, info):  # noqa: N802 (Qt name)
+            if info.requestUrl().host().lower() in GOOGLE_SIGNIN_HOSTS:
+                info.setHttpHeader(b"User-Agent", FIREFOX_UA.encode())
+
     def _make_profile(parent) -> "QWebEngineProfile":
         PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         profile = QWebEngineProfile("aureoclean-dashboard", parent)
@@ -68,8 +96,19 @@ if HAS_WEBENGINE:
         profile.setCachePath(str(PROFILE_DIR / "cache"))
         # Keep Arduino's sign-in even though it is a session cookie.
         profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
-        # Look like a normal Chrome so Google / Arduino sign-in pages accept it.
+        # Look like a normal Chrome to Arduino Cloud...
         profile.setHttpUserAgent(re.sub(r"\s*QtWebEngine/\S+", "", profile.httpUserAgent()))
+        # ...and like Firefox on Google's sign-in pages (header + JavaScript).
+        profile._quirk = _GoogleSignInQuirk(profile)  # keep a reference
+        profile.setUrlRequestInterceptor(profile._quirk)
+        script = QWebEngineScript()
+        script.setName("google-signin-quirk")
+        script.setSourceCode(_NAVIGATOR_QUIRK % {"hosts": json.dumps(list(GOOGLE_SIGNIN_HOSTS)),
+                                                  "ua": json.dumps(FIREFOX_UA)})
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        script.setRunsOnSubFrames(True)
+        profile.scripts().insert(script)
         return profile
 
 

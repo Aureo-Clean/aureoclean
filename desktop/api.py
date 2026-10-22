@@ -65,6 +65,9 @@ class ApiClient:
         self.token = result["token"]
         return result
 
+    def resend_verification(self, identifier: str, password: str) -> dict:
+        return self._call("POST", "/auth/resend-verification", {"identifier": identifier, "password": password})
+
     def logout(self) -> None:
         try:
             if self.token:

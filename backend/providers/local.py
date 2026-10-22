@@ -12,7 +12,12 @@ from .base import AccountDisabled, AccountExists, AlreadyExists
 
 
 class LocalBackend:
-    """Implements both DocStore and Identity on one SQLite file."""
+    """Implements both DocStore and Identity on one SQLite file.
+
+    Local mode can't send email, so email verification is switched off
+    (tests switch it on and use ``mark_email_verified``)."""
+
+    supports_email_verification = False
 
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
@@ -35,6 +40,7 @@ class LocalBackend:
                 password_hash TEXT NOT NULL,
                 disabled INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS verified_emails (uid TEXT PRIMARY KEY);
             """
         )
 
@@ -149,3 +155,14 @@ class LocalBackend:
     def delete_account(self, uid: str) -> None:
         with self._lock:
             self._db.execute("DELETE FROM accounts WHERE uid=?", (uid,))
+
+    def send_verification_email(self, email: str, password: str) -> None:
+        self.sent_verifications = getattr(self, "sent_verifications", []) + [email]
+
+    def is_email_verified(self, uid: str) -> bool:
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM verified_emails WHERE uid=?", (uid,)).fetchone() is not None
+
+    def mark_email_verified(self, uid: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO verified_emails (uid) VALUES (?)", (uid,))
