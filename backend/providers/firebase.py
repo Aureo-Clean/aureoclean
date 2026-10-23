@@ -6,9 +6,12 @@ stay outside the app folder; its path comes from GOOGLE_APPLICATION_CREDENTIALS.
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 import requests
+
+log = logging.getLogger("aureoclean.firebase")
 
 from .base import AccountDisabled, AccountExists, AlreadyExists, ProviderError
 
@@ -149,16 +152,29 @@ class FirebaseBackend:
             raise AccountExists(email) from exc
         return user.uid
 
+    def _post(self, url: str, body: dict) -> requests.Response:
+        """POST to the Firebase Auth REST API, retrying once on a network hiccup.
+
+        A long-idle connection can be dropped by the router; the retry uses a
+        fresh connection. The real error is written to logs/backend.log."""
+        last = None
+        for attempt in (1, 2):
+            try:
+                return self._http.post(url, params={"key": self._api_key}, json=body, timeout=15)
+            except requests.RequestException as exc:
+                last = exc
+                log.warning("Firebase request failed (attempt %d): %s: %s", attempt, type(exc).__name__, exc)
+                self._http.close()
+                self._http = requests.Session()
+        if isinstance(last, requests.exceptions.SSLError):
+            raise ProviderError("Secure connection to Firebase failed. Check the Pi's date and time are correct.") from last
+        if isinstance(last, requests.exceptions.Timeout):
+            raise ProviderError("Firebase took too long to answer. The internet connection may be slow.") from last
+        raise ProviderError("Cannot reach Firebase. Check the internet connection "
+                            f"(details: {type(last).__name__}, see logs/backend.log).") from last
+
     def verify_password(self, email: str, password: str) -> Optional[str]:
-        try:
-            resp = self._http.post(
-                SIGN_IN_URL,
-                params={"key": self._api_key},
-                json={"email": email, "password": password, "returnSecureToken": True},
-                timeout=15,
-            )
-        except requests.RequestException as exc:
-            raise ProviderError("Cannot reach Firebase. Check the internet connection.") from exc
+        resp = self._post(SIGN_IN_URL, {"email": email, "password": password, "returnSecureToken": True})
 
         if resp.ok:
             return resp.json().get("localId")
