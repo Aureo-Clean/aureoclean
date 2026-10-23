@@ -567,6 +567,7 @@ class AdminDashboard(QWidget):
         self.refresh_overview()
 
     def load_account(self):
+        self.sms.message.clear()  # don't show an old "test mode" note after switching modes
         run_async(self.api.me, self.sms.load, lambda e: self.nav.handle_session_error(e))
 
     def refresh_overview(self):

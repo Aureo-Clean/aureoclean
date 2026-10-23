@@ -83,7 +83,13 @@ class JanitorDashboard(QWidget):
         grid.setColumnStretch(1, 6)
         grid.setRowStretch(1, 1)
         self.tabs.addTab(scroll_page(profile), "My profile")
-        self.tabs.currentChanged.connect(lambda i: i in (TAB_ALERTS, TAB_PROFILE) and self.load())
+        self.tabs.currentChanged.connect(self._tab_changed)
+
+    def _tab_changed(self, index):
+        if index == TAB_PROFILE:
+            self.sms.message.clear()
+        if index in (TAB_ALERTS, TAB_PROFILE):
+            self.load()
 
     def enter(self, user: dict):
         self.topbar.set_user(user)
