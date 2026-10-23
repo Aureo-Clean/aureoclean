@@ -29,6 +29,13 @@ PHONE_PH_INTL = re.compile(r"^(\+?63)9\d{9}$")      # +639171234567 / 6391712345
 PHONE_INTL = re.compile(r"^\+[1-9]\d{7,14}$")       # any E.164 number
 
 
+CMS_HINTS = {
+    "38": "network out of order", "41": "temporary network failure", "42": "network congestion",
+    "310": "no SIM card", "311": "SIM needs a PIN", "330": "no SMS centre number on the SIM",
+    "331": "no network service", "500": "often no load/credit",
+}
+
+
 class SmsError(Exception):
     """Sending failed. The message is safe to show to users."""
 
@@ -160,7 +167,10 @@ class ModemSender:
                 ser.write(text.encode() + b"\x1a")  # Ctrl+Z ends the message
                 reply = self._read_until(ser, ("+CMGS",), 60)
                 if "+CMGS" not in reply:
-                    raise SmsError("The network did not accept the SMS. Check signal, SIM load and network registration.")
+                    code = re.search(r"\+CMS ERROR:\s*(\d+)", reply)
+                    hint = CMS_HINTS.get(code.group(1), f"error {code.group(1)}") if code else "no reply"
+                    raise SmsError(f"The network did not accept the SMS ({hint}). "
+                                   "Check signal, SIM load and network registration.")
                 log.info("SMS sent to %s", mask_phone(to))
             finally:
                 ser.close()

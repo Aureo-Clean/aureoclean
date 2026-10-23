@@ -137,6 +137,15 @@ before the modem is wired:
 tail -n 5 ~/aureoclean/logs/sms_outbox.log
 ```
 
+**Check the modem first (recommended):** with AureoClean closed, run
+
+```bash
+.venv/bin/python tools/sms_test.py                      # port, speed, SIM, network, signal, SMS centre
+.venv/bin/python tools/sms_test.py --send 09XXXXXXXXX   # ...and send a real test text
+```
+
+It finds the right speed by itself and prints the exact settings to put in the config file.
+
 **Real modem (`AUREOCLEAN_SMS_MODE=modem`):**
 
 1. `sudo raspi-config` → *Interface Options* → *Serial Port* → login shell **No**, serial hardware **Yes** → reboot.
