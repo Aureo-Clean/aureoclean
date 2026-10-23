@@ -616,7 +616,8 @@ class AureoService:
         if not profile or profile.get("status") != "active":
             self.sessions.revoke(session.token)
             raise Unauthorized("Your account is no longer active.")
-        return _public_profile(profile)
+        # Tell the screen whether texts are really sent (modem) or only logged (test mode).
+        return {**_public_profile(profile), "smsMode": self.sms.mode}
 
     def change_password(self, session: Session, current: str, new: str) -> None:
         new = _check(new, validate_password)

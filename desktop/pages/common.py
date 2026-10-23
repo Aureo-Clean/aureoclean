@@ -32,13 +32,28 @@ class TopBar(QFrame):
 class SmsCard(QWidget):
     """Add / verify a mobile number and switch SMS alerts on or off."""
 
-    def __init__(self, api, intro: str):
+    def __init__(self, api, intro: str, on_open_tools=None):
         super().__init__()
         self.api = api
         self.profile: dict = {}
         frame, body = card()
         body.addWidget(label("SMS alerts", "Section"))
         body.addWidget(label(intro, "Muted"))
+
+        # Shown while SMS is in test mode: real codes can't arrive yet.
+        self.test_banner = QWidget()
+        tb = QHBoxLayout(self.test_banner)
+        tb.setContentsMargins(0, 0, 0, 0)
+        tb.setSpacing(6)
+        warn = label("SMS is in test mode, so no real texts (or codes) are sent yet. "
+                     + ("Turn on the modem first:" if on_open_tools else
+                        "Ask an administrator to turn on the GSM modem."))
+        warn.setObjectName("Error")
+        tb.addWidget(warn, 1)
+        if on_open_tools:
+            tb.addWidget(button("Turn on modem", "Primary", on_open_tools), 0, Qt.AlignVCenter)
+        self.test_banner.hide()
+        body.addWidget(self.test_banner)
 
         self.state = label("")
         self.state.setObjectName("Info")
@@ -83,6 +98,8 @@ class SmsCard(QWidget):
 
     def load(self, profile: dict):
         self.profile = profile
+        self.message.clear()  # don't leave an old message from a previous attempt
+        self.test_banner.setVisible(profile.get("smsMode") == "log")
         verified = profile.get("smsPhone")
         pending = profile.get("smsPendingPhone")
         if verified:
@@ -96,6 +113,7 @@ class SmsCard(QWidget):
         self.alerts.blockSignals(True)
         self.alerts.setChecked(bool(profile.get("smsAlerts")))
         self.alerts.setEnabled(bool(verified))
+        self.alerts.setText("Send me alerts by SMS" if verified else "Send me alerts by SMS (verify your number first)")
         self.alerts.blockSignals(False)
         self.remove_btn.setVisible(bool(verified))
         self.code_box.setVisible(bool(pending))

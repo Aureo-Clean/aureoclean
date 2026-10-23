@@ -529,7 +529,8 @@ class AdminDashboard(QWidget):
         ib.addWidget(self.account_info)
         ib.addWidget(change_password_button(self.api, self))
         ib.addStretch(1)
-        self.sms = SmsCard(self.api, "Critical alerts (fire, emergency stop) and system notices by text.")
+        self.sms = SmsCard(self.api, "Critical alerts (fire, emergency stop) and system notices by text.",
+                           on_open_tools=lambda: self.tabs.setCurrentIndex(TAB_TOOLS))
         grid.addWidget(info, 0, 0)
         grid.addWidget(self.sms, 0, 1)
         grid.setColumnStretch(0, 5)
