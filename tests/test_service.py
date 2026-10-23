@@ -127,6 +127,9 @@ class JanitorFlow(Base):
         _, code = self.approved()
         with self.assertRaises(BadRequest):
             self.svc.activate_janitor("MarkAgot", code, "short")
+        with self.assertRaises(BadRequest):  # 17 characters: over the 16 limit
+            self.svc.activate_janitor("MarkAgot", code, "Abcdefgh123456789")
+        self.svc.activate_janitor("MarkAgot", code, "Abcdefgh12345678")  # exactly 16 is fine
 
     def test_status_check(self):
         req = self.request()

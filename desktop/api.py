@@ -57,8 +57,8 @@ class ApiClient:
             raise ApiError("The AureoClean service took too long to respond.") from exc
 
     # ---------------------------------------------------------------- public
-    def health(self):
-        return self._call("GET", "/health")
+    def health(self, recheck: bool = False):
+        return self._call("GET", "/health", query={"recheck": "true" if recheck else ""})
 
     def login(self, identifier: str, password: str) -> dict:
         result = self._call("POST", "/auth/login", {"identifier": identifier, "password": password})

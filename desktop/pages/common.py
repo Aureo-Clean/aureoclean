@@ -7,7 +7,7 @@ from PySide6.QtCore import QProcess, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
 
-from ..widgets import BusyButton, Field, Message, button, card, label, logo_label, run_async, show_password_toggle
+from ..widgets import PASSWORD_MAX, BusyButton, Field, Message, button, card, label, logo_label, run_async, show_password_toggle
 
 
 class TopBar(QFrame):
@@ -227,8 +227,9 @@ class ChangePasswordDialog(QDialog):
         body.setSpacing(7)
         body.addWidget(label("Change password", "Section"))
         self.current = Field("Current password", password=True)
-        self.new = Field("New password", password=True, hint="8+ characters with a letter and a number.")
-        self.confirm = Field("Confirm new password", password=True)
+        self.new = Field("New password", password=True, hint="8–16 characters with a letter and a number.",
+                         max_length=PASSWORD_MAX)
+        self.confirm = Field("Confirm new password", password=True, max_length=PASSWORD_MAX)
         for f in (self.current, self.new, self.confirm):
             body.addWidget(f)
         body.addWidget(show_password_toggle(self.current, self.new, self.confirm))

@@ -156,19 +156,31 @@ def scroll_page(content: QWidget, max_width: Optional[int] = None) -> QScrollAre
     return area
 
 
+PASSWORD_MAX = 16  # same limit as the backend (backend/security.py)
+
+
 class Field(QWidget):
     """A labelled input."""
 
-    def __init__(self, title: str, placeholder: str = "", password: bool = False, hint: str = ""):
+    def __init__(self, title: str, placeholder: str = "", password: bool = False, hint: str = "",
+                 max_length: int = 0):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        layout.addWidget(label(title, "FieldLabel"))
+        head = QHBoxLayout()
+        head.addWidget(label(title, "FieldLabel"), 1)
         self.edit = QLineEdit()
         self.edit.setPlaceholderText(placeholder)
         if password:
             self.edit.setEchoMode(QLineEdit.Password)
+        if max_length:
+            # Typing stops at the limit; the cursor never moves on to another box.
+            self.edit.setMaxLength(max_length)
+            counter = label(f"0/{max_length}", "Muted", wrap=False)
+            self.edit.textChanged.connect(lambda t: counter.setText(f"{len(t)}/{max_length}"))
+            head.addWidget(counter)
+        layout.addLayout(head)
         layout.addWidget(self.edit)
         if hint:
             layout.addWidget(label(hint, "Muted"))

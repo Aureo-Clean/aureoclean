@@ -126,8 +126,12 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     # ------------------------------------------------ public
     @app.get("/health")
-    def health():
-        return {"ok": True, "mode": svc().settings.mode}
+    def health(recheck: bool = False):
+        watch = getattr(app.state, "network", None)
+        if watch is not None and recheck:
+            watch.check_now()
+        net = watch.status() if watch is not None else {"internet": "unknown", "message": ""}
+        return {"ok": True, "mode": svc().settings.mode, **net}
 
     @app.post("/auth/login")
     def login(body: LoginBody):
@@ -263,6 +267,10 @@ def run() -> None:
     settings = load_settings()
     service = build_service(settings)  # fail fast on bad configuration
     app.state.service = service
+    from .network import NetworkWatch
+
+    app.state.network = NetworkWatch()
+    app.state.network.start()
     log.info("AureoClean API starting in %s mode on %s:%s", settings.mode, settings.host, settings.port)
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
 

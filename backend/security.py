@@ -80,12 +80,15 @@ def validate_phone(phone: str) -> str:
     return phone
 
 
+PASSWORD_MAX = 16
+
+
 def validate_password(password: str) -> str:
     password = password or ""
     if len(password) < 8:
         raise ValidationError("Password must be at least 8 characters.")
-    if len(password) > 128:
-        raise ValidationError("Password must be at most 128 characters.")
+    if len(password) > PASSWORD_MAX:
+        raise ValidationError(f"Password must be at most {PASSWORD_MAX} characters.")
     if not re.search(r"[A-Za-z]", password) or not re.search(r"[0-9]", password):
         raise ValidationError("Password must contain at least one letter and one number.")
     return password

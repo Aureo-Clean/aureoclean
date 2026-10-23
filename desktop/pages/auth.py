@@ -12,6 +12,7 @@ from ..widgets import (
     card,
     label,
     logo_label,
+    PASSWORD_MAX,
     run_async,
     scroll_page,
     show_password_toggle,
@@ -149,15 +150,19 @@ class LoginPage(_FormPage):
             self.message.success(note)
         self.check_service()
 
-    def check_service(self):
+    def check_service(self, recheck: bool = True):
         def ok(result):
             mode = result.get("mode", "?")
-            self.service_status.setText(f"● Connected to the AureoClean service ({mode} mode)")
+            net = result.get("internet", "unknown")
+            text = f"● AureoClean service running ({mode} mode)"
+            if net not in ("online", "unknown"):
+                text += f"\n⚠ {result.get('message', '')}"
+            self.service_status.setText(text)
 
         def err(e):
             self.service_status.setText(f"● {e.message}")
 
-        run_async(self.api.health, ok, err)
+        run_async(lambda: self.api.health(recheck), ok, err)
 
     def do_login(self):
         self.message.clear()
@@ -176,6 +181,8 @@ class LoginPage(_FormPage):
             if not needs_verify:  # keep the password so "Resend" can use it
                 self.password.clear()
             self.message.error(e.message)
+            if "firebase" in e.message.lower():
+                self.check_service()
             self.password.edit.setFocus()
 
         self.resend_btn.hide()
@@ -269,9 +276,11 @@ class ActivatePage(_FormPage):
         )
         self.username = Field("Username *", "The username you requested")
         self.code = Field("Activation code *", "XXXX-XXXX")
-        self.password = Field("New password *", "8+ characters, letter and number", password=True)
-        self.confirm = Field("Confirm password *", "Type it again", password=True)
-        self.add_fields(self.username, self.code, self.password, self.confirm)
+        self.password = Field("New password *", "8–16 characters, letter and number", password=True,
+                              max_length=PASSWORD_MAX)
+        self.confirm = Field("Confirm password *", "Type it again", password=True, max_length=PASSWORD_MAX)
+        self.add_fields(self.username, self.code)
+        self.add_fields(self.password, self.confirm, columns=1)  # each password on its own row
         self.body.addWidget(show_password_toggle(self.password, self.confirm))
         self.submit = button("Activate account", "Primary", self.do_activate)
         self.busy = BusyButton(self.submit, "Activating…")
@@ -310,9 +319,11 @@ class AdminRegisterPage(_FormPage):
         self.full_name = Field("Full name *", "Your full name")
         self.username = Field("Username *", "e.g. headadmin")
         self.email = Field("Email *", "The email the invite was for")
-        self.password = Field("Password *", "8+ characters, letter and number", password=True)
-        self.confirm = Field("Confirm password *", "Type it again", password=True)
-        self.add_fields(self.invite, self.full_name, self.username, self.email, self.password, self.confirm)
+        self.password = Field("Password *", "8–16 characters, letter and number", password=True,
+                              max_length=PASSWORD_MAX)
+        self.confirm = Field("Confirm password *", "Type it again", password=True, max_length=PASSWORD_MAX)
+        self.add_fields(self.invite, self.full_name, self.username, self.email)
+        self.add_fields(self.password, self.confirm, columns=1)  # each password on its own row
         self.body.addWidget(show_password_toggle(self.password, self.confirm))
         self.submit = button("Create admin account", "Primary", self.do_register)
         self.busy = BusyButton(self.submit, "Creating…")
