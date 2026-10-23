@@ -228,7 +228,23 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     @app.get("/admin/sms/status")
     def sms_status(_: Session = Depends(admin)):
-        return svc().sms_status()
+        return {**svc().sms_status(), **{"settings": svc().sms_settings()}}
+
+    @app.get("/admin/sms/settings")
+    def sms_settings(_: Session = Depends(admin)):
+        return svc().sms_settings()
+
+    @app.post("/admin/sms/detect")
+    def sms_detect(session: Session = Depends(admin)):
+        return svc().use_detected_modem(session)
+
+    @app.post("/admin/sms/test-mode")
+    def sms_test_mode(session: Session = Depends(admin)):
+        return svc().use_test_mode(session)
+
+    @app.post("/admin/sms/test")
+    def sms_test_to(body: PhoneBody, session: Session = Depends(admin)):
+        return svc().send_test_sms_to(session, body.phone)
 
     @app.get("/admin/invites")
     def list_invites(_: Session = Depends(admin)):

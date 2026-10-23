@@ -55,7 +55,16 @@ from .security import (
     validate_username,
     verify_secret,
 )
-from .sms import LogSender, SmsError, SmsSender, mask_phone, normalize_phone
+from .sms import (
+    LogSender,
+    ModemSender,
+    SavedSmsSettings,
+    SmsError,
+    SmsSender,
+    detect_modem,
+    mask_phone,
+    normalize_phone,
+)
 
 ROLE_ADMIN = "admin"
 ROLE_JANITOR = "janitor"
@@ -940,6 +949,49 @@ class AureoService:
         ]
 
     # ------------------------------------------------ admin SMS tools
+    def sms_settings(self) -> dict:
+        port = getattr(self.sms, "port", "")
+        baud = getattr(self.sms, "baud", 0)
+        label = f"GSM modem on {port} @ {baud} baud" if self.sms.mode == "modem" else "Test mode (texts are not sent)"
+        return {"mode": self.sms.mode, "port": port, "baud": baud, "label": label}
+
+    def use_detected_modem(self, admin: Session, detector=None) -> dict:
+        """Find the modem on the serial ports and switch SMS to it right away."""
+        try:
+            found = (detector or detect_modem)()
+        except SmsError as exc:
+            raise ServiceUnavailable(str(exc))
+        self.sms = ModemSender(found["port"], found["baud"])
+        SavedSmsSettings(self.settings.sms_settings_file).save("modem", found["port"], found["baud"])
+        self.audit("sms_modem_enabled", admin.actor, None, {"port": found["port"], "baud": found["baud"],
+                                                            "model": found["model"][:60]})
+        return {**self.sms_settings(), "model": found["model"],
+                "message": f"Found {found['model'] or 'the modem'} on {found['port']} @ {found['baud']} baud. "
+                           "Texts are now sent for real."}
+
+    def use_test_mode(self, admin: Session) -> dict:
+        self.sms = LogSender(self.settings.log_dir / "sms_outbox.log")
+        SavedSmsSettings(self.settings.sms_settings_file).save("log")
+        self.audit("sms_test_mode", admin.actor)
+        return {**self.sms_settings(), "message": "Test mode: texts are written to logs/sms_outbox.log, not sent."}
+
+    def send_test_sms_to(self, admin: Session, phone: str) -> dict:
+        try:
+            phone = normalize_phone(phone)
+        except ValueError as exc:
+            raise BadRequest(str(exc))
+        key = f"testsms:{admin.uid}"
+        if self.sms_sends.locked_for(key):
+            raise TooManyAttempts("Too many test texts. Wait a few minutes.")
+        try:
+            self.sms.send(phone, f"AureoClean test message from {admin.username}. SMS is working.")
+        except SmsError as exc:
+            raise ServiceUnavailable(str(exc))
+        self.sms_sends.record_failure(key)
+        self.audit("sms_test_sent", admin.actor, None, {"phone": mask_phone(phone)})
+        where = "written to logs/sms_outbox.log (test mode)" if self.sms.mode == "log" else f"sent to {phone}"
+        return {"message": f"Test SMS {where}."}
+
     def sms_status(self) -> dict:
         try:
             return self.sms.check()

@@ -3,6 +3,7 @@ Laid out for the 7-inch 800x480 display (no stat tiles; counts live in the tab n
 from __future__ import annotations
 
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -53,6 +54,8 @@ ACTION_LABELS = {
     "sms_alerts_on": "SMS alerts turned on",
     "sms_alerts_off": "SMS alerts turned off",
     "sms_test_sent": "Test SMS sent",
+    "sms_modem_enabled": "SMS switched to GSM modem",
+    "sms_test_mode": "SMS switched to test mode",
     "admin_email_verified": "Admin email verified",
     "verification_email_sent": "Verification email sent",
 }
@@ -259,48 +262,124 @@ class UsersTab(_Tab):
 
 # ====================================================================== tools
 class ToolsTab(_Tab):
-    """Shortcuts to Arduino Cloud and Firebase (open in Chrome), plus SMS modem status."""
+    """SMS (GSM modem) controls, plus shortcuts to Arduino Cloud and Firebase."""
 
     def __init__(self, api):
         super().__init__(api)
-        self.layout_.addWidget(label(
-            "These open in Google Chrome. Access is controlled by each website's own account.", "Muted"))
+
+        # ---- SMS card (full width, first)
+        sms, body = card()
+        head = QHBoxLayout()
+        head.addWidget(label("SMS (GSM modem)", "Section"))
+        head.addStretch(1)
+        body.addLayout(head)
+        self.mode_label = label("Checking…")
+        self.mode_label.setObjectName("Info")
+        body.addWidget(self.mode_label)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.detect_btn = button("Find & use modem", "Primary", self.detect)
+        self.check_btn = button("Check signal", on_click=self.check_sms)
+        self.testmode_btn = button("Use test mode", on_click=self.test_mode)
+        for b in (self.detect_btn, self.check_btn, self.testmode_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        body.addLayout(row)
+        self.sms_state = label("", "Muted")
+        body.addWidget(self.sms_state)
+
+        send_row = QHBoxLayout()
+        send_row.setSpacing(6)
+        self.test_number = Field("Send a test SMS to", "0917 123 4567")
+        send_row.addWidget(self.test_number, 1)
+        self.send_btn = button("Send test SMS", "Gold", self.send_test)
+        send_row.addWidget(self.send_btn, 0, Qt.AlignBottom)
+        body.addLayout(send_row)
+        self.test_number.edit.returnPressed.connect(self.send_btn.click)
+        self.layout_.addWidget(sms)
+        self.layout_.addWidget(self.message)
+
+        # ---- website shortcuts
+        self.layout_.addWidget(label("Websites (open in Google Chrome)", "FieldLabel"))
         self.grid = QGridLayout()
         self.grid.setSpacing(8)
         self.layout_.addLayout(self.grid)
-
-        self.sms_frame, body = card()
-        body.addWidget(label("SMS modem", "Section"))
-        self.sms_state = label("Not checked yet.", "Muted")
-        body.addWidget(self.sms_state)
-        self.check_btn = button("Check SMS modem", on_click=self.check_sms)
-        body.addWidget(self.check_btn, 0)
-        self.layout_.addWidget(self.message)
         self.layout_.addStretch(1)
 
+    def _busy(self, on: bool, text: str = "") -> None:
+        for b in (self.detect_btn, self.check_btn, self.testmode_btn, self.send_btn):
+            b.setEnabled(not on)
+        if text:
+            self.sms_state.setText(text)
+
+    def _show_settings(self, st: dict) -> None:
+        on_modem = st.get("mode") == "modem"
+        self.mode_label.setText(("● " if on_modem else "○ ") + st.get("label", ""))
+        self.testmode_btn.setVisible(on_modem)
+        self.detect_btn.setText("Find modem again" if on_modem else "Find & use modem")
+
     def refresh(self):
+        self.message.clear()
+        run_async(self.api.sms_settings, self._show_settings, self.fail)
+
         def ok(links):
             while self.grid.count():
                 item = self.grid.takeAt(0)
-                if item.widget() and item.widget() is not self.sms_frame:
+                if item.widget():
                     item.widget().deleteLater()
             tiles = [LinkButton(link) for link in links if link.get("key") != "dashboard"]
-            tiles.append(self.sms_frame)
             for i, tile in enumerate(tiles):
                 self.grid.addWidget(tile, i // 2, i % 2)
 
         run_async(self.api.links, ok, self.fail)
 
+    def detect(self):
+        self.message.clear()
+        self._busy(True, "Looking for the modem on the serial ports… (up to a minute)")
+
+        def ok(result):
+            self._show_settings(result)
+            self.sms_state.setText("")
+            self.message.success(result["message"])
+
+        def err(e):
+            self.sms_state.setText("")
+            self.fail(e)
+
+        run_async(self.api.sms_detect, ok, err, lambda: self._busy(False))
+
+    def test_mode(self):
+        if not _confirm(self, "Use test mode", "Stop sending real texts? Messages will only be written to a log file."):
+            return
+
+        def ok(result):
+            self._show_settings(result)
+            self.message.info(result["message"])
+
+        run_async(self.api.sms_test_mode, ok, self.fail)
+
     def check_sms(self):
-        self.sms_state.setText("Checking… (up to a few seconds)")
-        self.check_btn.setEnabled(False)
+        self.message.clear()
+        self._busy(True, "Checking… (a few seconds)")
 
         def ok(st):
             mark = "✓" if st.get("ok") else "✗"
-            mode = "Test mode (not sending)" if st.get("mode") == "log" else "GSM modem"
-            self.sms_state.setText(f"{mark} {mode}: {st.get('detail', '')}")
+            self.sms_state.setText(f"{mark} {st.get('detail', '')}")
+            if st.get("settings"):
+                self._show_settings(st["settings"])
 
-        run_async(self.api.sms_status, ok, self.fail, lambda: self.check_btn.setEnabled(True))
+        run_async(self.api.sms_status, ok, self.fail, lambda: self._busy(False))
+
+    def send_test(self):
+        self.message.clear()
+        number = self.test_number.value()
+        if not number:
+            self.message.error("Type a mobile number first.")
+            return
+        self._busy(True, "Sending… (up to a minute with the GSM modem)")
+        run_async(lambda: self.api.sms_test_to(number), lambda r: self.message.success(r["message"]), self.fail,
+                  lambda: self._busy(False, " "))
 
 
 # ====================================================================== invites

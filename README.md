@@ -137,7 +137,13 @@ before the modem is wired:
 tail -n 5 ~/aureoclean/logs/sms_outbox.log
 ```
 
-**Check the modem first (recommended):** with AureoClean closed, run
+**Turn the modem on from the app (easiest):** sign in as admin → **Tools** → **Find & use modem**.
+AureoClean searches the serial ports and speeds, switches to the modem immediately and remembers it
+(saved in `~/.config/aureoclean/sms.json`, which overrides `AUREOCLEAN_SMS_MODE` in the config file).
+**Check signal** shows network, operator and signal; **Send test SMS** texts any number;
+**Use test mode** switches back to writing texts to `logs/sms_outbox.log`.
+
+**Or check the modem from the Terminal:** with AureoClean closed, run
 
 ```bash
 .venv/bin/python tools/sms_test.py                      # port, speed, SIM, network, signal, SMS centre

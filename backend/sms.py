@@ -15,7 +15,9 @@ switched off (nationwide deadline 31 Dec 2026), so plan for a 4G module.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import threading
 import time
@@ -103,23 +105,37 @@ class LogSender:
 
 
 # ---------------------------------------------------------------- real modem
+# Only one conversation with the modem at a time (sending, checking, detecting).
+MODEM_LOCK = threading.RLock()
+
+# Where a SIM900A / USB modem usually appears on a Raspberry Pi.
+CANDIDATE_PORTS = ("/dev/serial0", "/dev/ttyAMA0", "/dev/ttyS0", "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0")
+CANDIDATE_BAUDS = (9600, 115200, 57600, 38400, 19200)
+
+
+def open_port(port: str, baud: int):
+    try:
+        import serial  # pyserial
+    except ImportError as exc:
+        raise SmsError("pyserial is not installed. Run setup_pi.sh again.") from exc
+    try:
+        return serial.Serial(port, baud, timeout=0.3, write_timeout=5)
+    except (serial.SerialException, OSError) as exc:
+        if "busy" in str(exc).lower():
+            raise SmsError(f"{port} is busy: another program (e.g. tools/sms_test.py) is using the modem.") from exc
+        raise SmsError(f"Cannot open the SMS modem on {port}. Is it connected and is the serial port enabled?") from exc
+
+
 class ModemSender:
     mode = "modem"
 
-    def __init__(self, port: str, baud: int):
+    def __init__(self, port: str, baud: int, opener=None):
         self.port = port
         self.baud = baud
-        self._lock = threading.Lock()  # one conversation with the modem at a time
+        self._opener = opener or open_port
 
     def _open(self):
-        try:
-            import serial  # pyserial
-        except ImportError as exc:
-            raise SmsError("pyserial is not installed. Run setup_pi.sh again.") from exc
-        try:
-            return serial.Serial(self.port, self.baud, timeout=0.3, write_timeout=5)
-        except (serial.SerialException, OSError) as exc:
-            raise SmsError(f"Cannot open the SMS modem on {self.port}. Is it connected and is the serial port enabled?") from exc
+        return self._opener(self.port, self.baud)
 
     @staticmethod
     def _read_until(ser, tokens: tuple[str, ...], timeout: float) -> str:
@@ -145,17 +161,22 @@ class ModemSender:
         return reply
 
     def _prepare(self, ser) -> None:
-        try:
-            self._cmd(ser, "AT")
-        except SmsError as exc:
-            raise SmsError("The modem is not answering. Check its power supply, wiring (TX/RX) and baud rate.") from exc
+        # The SIM900A may need a couple of "AT"s to wake up / lock onto the speed.
+        for attempt in range(3):
+            try:
+                self._cmd(ser, "AT", timeout=1.5)
+                break
+            except SmsError as exc:
+                if attempt == 2:
+                    raise SmsError("The modem is not answering. Check its power supply, wiring (TX/RX) "
+                                   "and baud rate (Tools → Find & use modem).") from exc
         self._cmd(ser, "ATE0")          # no echo
         self._cmd(ser, "AT+CMGF=1")     # text mode
         self._cmd(ser, 'AT+CSCS="GSM"')
 
     def send(self, to: str, text: str) -> None:
         text = gsm_text(text)
-        with self._lock:
+        with MODEM_LOCK:
             ser = self._open()
             try:
                 self._prepare(ser)
@@ -176,14 +197,19 @@ class ModemSender:
                 ser.close()
 
     def check(self) -> dict:
-        with self._lock:
+        with MODEM_LOCK:
             ser = self._open()
             try:
                 self._prepare(ser)
                 creg = self._cmd(ser, "AT+CREG?")
                 csq = self._cmd(ser, "AT+CSQ")
+                try:
+                    cops = self._cmd(ser, "AT+COPS?", timeout=10)
+                except SmsError:
+                    cops = ""
             finally:
                 ser.close()
+        op = re.search(r'\+COPS:\s*\d+,\d+,"([^"]+)"', cops)
         reg = re.search(r"\+CREG:\s*\d+,(\d+)", creg)
         sig = re.search(r"\+CSQ:\s*(\d+),", csq)
         reg_state = {"0": "not registered", "1": "registered (home)", "2": "searching", "3": "denied", "5": "registered (roaming)"}
@@ -193,8 +219,69 @@ class ModemSender:
         return {
             "mode": "modem",
             "ok": registered,
-            "detail": f"Port {self.port}: network {reg_state.get(reg.group(1), '?') if reg else '?'}, signal {signal}.",
+            "detail": (f"{self.port} @ {self.baud}: network {reg_state.get(reg.group(1), '?') if reg else '?'}"
+                       f"{' (' + op.group(1) + ')' if op else ''}, signal {signal}."),
         }
+
+
+def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exists=os.path.exists) -> dict:
+    """Find the modem: try each serial port and speed until it answers "OK".
+
+    Returns {"port", "baud", "model"}; raises SmsError with advice if nothing answers."""
+    opener = opener or open_port
+    seen, tried, errors = set(), [], []
+    with MODEM_LOCK:
+        for port in ports:
+            if not exists(port):
+                continue
+            real = os.path.realpath(port)
+            if real in seen:
+                continue
+            seen.add(real)
+            for baud in bauds:
+                try:
+                    ser = opener(port, baud)
+                except SmsError as exc:
+                    errors.append(str(exc))
+                    break
+                try:
+                    sender = ModemSender(port, baud, opener=lambda *_, s=ser: s)
+                    for _ in range(3):
+                        try:
+                            sender._cmd(ser, "AT", timeout=1.0)
+                            info = sender._cmd(ser, "ATI").replace("OK", "").strip()
+                            return {"port": port, "baud": baud, "model": info or "GSM modem"}
+                        except SmsError:
+                            continue
+                finally:
+                    ser.close()
+                tried.append(f"{port}@{baud}")
+    if errors and not tried:
+        raise SmsError(errors[0])
+    if not seen:
+        raise SmsError("No serial port found. Enable it: sudo raspi-config → Interface Options → Serial Port "
+                       "(login shell: No, hardware: Yes), then reboot.")
+    raise SmsError("The modem didn't answer on any port or speed. Check: power LED on, GND shared with the Pi, "
+                   "SIMT→Pi pin 10 and SIMR→Pi pin 8 (swap them if unsure), VCC_MCU→Pi 3.3 V.")
+
+
+class SavedSmsSettings:
+    """SMS settings chosen in the app (Tools tab), kept in ~/.config/aureoclean/sms.json.
+    They take priority over AUREOCLEAN_SMS_* in the config file."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def load(self) -> dict | None:
+        try:
+            data = json.loads(self.path.read_text())
+            return data if data.get("mode") in ("log", "modem") else None
+        except (OSError, ValueError):
+            return None
+
+    def save(self, mode: str, port: str = "", baud: int = 0) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"mode": mode, "port": port, "baud": baud}, indent=2))
 
 
 def build_sender(mode: str, port: str, baud: int, outbox: Path) -> SmsSender:

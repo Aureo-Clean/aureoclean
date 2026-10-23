@@ -11,6 +11,10 @@ from typing import Any, Optional
 BASE_URL = f"http://127.0.0.1:{os.environ.get('AUREOCLEAN_PORT', '8765')}"
 
 
+# Talking to the GSM modem (finding it, sending a text) can take up to a minute.
+SMS_TIMEOUT = 90
+
+
 class ApiError(Exception):
     def __init__(self, message: str, status: int = 0):
         super().__init__(message)
@@ -25,7 +29,8 @@ class ApiClient:
         # Never route loopback traffic through a system proxy.
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def _call(self, method: str, path: str, body: Optional[dict] = None, query: Optional[dict] = None) -> Any:
+    def _call(self, method: str, path: str, body: Optional[dict] = None, query: Optional[dict] = None,
+              timeout: float = 30) -> Any:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v not in (None, "")})
@@ -35,7 +40,7 @@ class ApiClient:
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
         try:
-            with self._opener.open(req, timeout=30) as resp:
+            with self._opener.open(req, timeout=timeout) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
@@ -101,7 +106,7 @@ class ApiClient:
         return self._call("GET", "/links")
 
     def phone_start(self, phone):
-        return self._call("POST", "/me/phone/start", {"phone": phone})
+        return self._call("POST", "/me/phone/start", {"phone": phone}, timeout=SMS_TIMEOUT)
 
     def phone_confirm(self, code):
         return self._call("POST", "/me/phone/confirm", {"code": code})
@@ -113,10 +118,22 @@ class ApiClient:
         return self._call("POST", "/me/sms-alerts", {"enabled": enabled})
 
     def test_sms(self, uid):
-        return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/test-sms")
+        return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/test-sms", timeout=SMS_TIMEOUT)
+
+    def sms_settings(self):
+        return self._call("GET", "/admin/sms/settings")
+
+    def sms_detect(self):
+        return self._call("POST", "/admin/sms/detect", timeout=SMS_TIMEOUT)
+
+    def sms_test_mode(self):
+        return self._call("POST", "/admin/sms/test-mode")
+
+    def sms_test_to(self, phone: str):
+        return self._call("POST", "/admin/sms/test", {"phone": phone}, timeout=SMS_TIMEOUT)
 
     def sms_status(self):
-        return self._call("GET", "/admin/sms/status")
+        return self._call("GET", "/admin/sms/status", timeout=SMS_TIMEOUT)
 
     def admin_overview(self):
         return self._call("GET", "/admin/overview")
