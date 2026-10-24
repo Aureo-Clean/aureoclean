@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; connect-src 'self' https://firestore.googleapis.com; base-uri 'none'; form-action 'none'">
+<title>Report a Restroom Problem · AureoClean</title>
+<link rel="icon" href="../assets/icon.png">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<a class="skip" href="#issues-fs">Skip to the questions</a>
+<main class="wide">
+  <header class="brand">
+    <img src="../assets/logo.svg" alt="">
+    <div>
+      <p class="name">Aureo<span>Clean</span></p>
+      <p class="tag">AUTOMATED HYGIENE MONITORING &amp; MAINTENANCE SYSTEM</p>
+    </div>
+  </header>
+
+  <section class="card" id="form-card" aria-labelledby="t">
+    <h1 id="t">Report a restroom problem</h1>
+    <p class="lead">Takes about 30 seconds. Your report goes straight to the maintenance team.</p>
+
+    <form id="form" novalidate>
+      <!-- 1. Where -->
+      <fieldset>
+        <legend>1. Which restroom?</legend>
+        <div class="place" id="place-fixed" hidden>
+          <span>📍 <b id="place-name"></b></span>
+          <button type="button" class="linkbtn" id="place-change">Change</button>
+        </div>
+        <div id="place-pick">
+          <label class="skip" for="location">Restroom</label>
+          <select id="location" aria-describedby="loc-hint"></select>
+          <input id="location-other" type="text" maxlength="60" placeholder="Type the location, e.g. 4th floor near the library"
+                 aria-label="Other location" hidden>
+          <div class="hint" id="loc-hint">Scanning the QR code inside the restroom fills this in for you.</div>
+        </div>
+      </fieldset>
+
+      <!-- 2. What -->
+      <fieldset id="issues-fs">
+        <legend>2. What's the problem? <span class="opt">(choose all that apply)</span></legend>
+        <div class="choices two" id="issues"></div>
+        <div class="alert danger" id="emergency-note" hidden role="alert">
+          <b>If anyone is in danger, tell the guard or call 911 now.</b> This report also alerts the
+          maintenance team immediately.
+        </div>
+      </fieldset>
+
+      <!-- 3. How urgent -->
+      <fieldset>
+        <legend>3. How urgent is it?</legend>
+        <div class="choices" id="urgency"></div>
+      </fieldset>
+
+      <!-- 4. Cleanliness rating -->
+      <fieldset>
+        <legend>4. How clean is the restroom right now? <span class="opt">(optional)</span></legend>
+        <div class="rating" id="rating" role="radiogroup" aria-label="Cleanliness from 1 (very dirty) to 5 (very clean)"></div>
+        <div class="hint">1 = very dirty · 5 = very clean</div>
+      </fieldset>
+
+      <!-- 5. Details -->
+      <label class="label" for="details">5. Anything else we should know? <span class="opt">(optional)</span>
+        <span class="counter" id="count">0/500</span></label>
+      <textarea id="details" maxlength="500" placeholder="e.g. The second cubicle's toilet keeps running."></textarea>
+
+      <!-- 6. Contact (optional) -->
+      <details class="more">
+        <summary>Want us to follow up? Add your contact <span class="opt">(optional)</span></summary>
+        <label class="label" for="cname">Your name</label>
+        <input id="cname" type="text" maxlength="60" autocomplete="name">
+        <label class="label" for="cphone">Mobile number</label>
+        <div class="phone">
+          <span aria-hidden="true">+63</span>
+          <input id="cphone" type="tel" inputmode="numeric" maxlength="13" autocomplete="tel-national" placeholder="917 123 4567">
+        </div>
+        <div class="hint">Only used to contact you about this report.</div>
+      </details>
+
+      <div class="trap" aria-hidden="true">
+        <label for="website">Leave this empty</label>
+        <input id="website" type="text" tabindex="-1" autocomplete="off">
+      </div>
+
+      <button class="btn" id="submit" type="submit">Send report</button>
+      <div id="msg" class="msg" role="alert" aria-live="assertive"></div>
+    </form>
+  </section>
+
+  <section class="card done" id="done-card" hidden aria-live="polite">
+    <div class="tick" aria-hidden="true">✓</div>
+    <h1>Thank you! Report sent.</h1>
+    <p class="lead">Reference <span class="ref" id="ref"></span> · <span id="done-place"></span></p>
+    <p class="lead" id="done-emergency" hidden><b>The maintenance team has been alerted.</b>
+      If anyone is in danger, tell the guard or call 911.</p>
+    <button class="btn ghost" type="button" id="again">Report another problem</button>
+  </section>
+
+  <footer>STI College Caloocan · AureoClean</footer>
+</main>
+
+<script src="../assets/config.js"></script>
+<script src="../assets/aureo.js"></script>
+<script>
+(function () {
+  "use strict";
+  var A = window.Aureo, cfg = A.cfg;
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+  var qrCode = (params.get("r") || "").replace(/[^A-Za-z0-9-]/g, "").slice(0, 30);
+  var source = qrCode ? "qr" : "web";
+  var locations = cfg.locations || [];
+  var place = null; // {code, name}
+
+  // ---- 1. location
+  var sel = $("location");
+  sel.innerHTML = '<option value="">Choose a restroom…</option>';
+  locations.forEach(function (l) { var o = document.createElement("option"); o.value = l.code; o.textContent = l.name; sel.appendChild(o); });
+  var other = document.createElement("option"); other.value = "__other"; other.textContent = "Somewhere else…"; sel.appendChild(other);
+  sel.addEventListener("change", function () { $("location-other").hidden = sel.value !== "__other"; });
+
+  function fixPlace(p) {
+    place = p;
+    $("place-name").textContent = p.name;
+    $("place-fixed").hidden = false; $("place-pick").hidden = true;
+  }
+  if (qrCode) {
+    var known = locations.filter(function (l) { return l.code.toUpperCase() === qrCode.toUpperCase(); })[0];
+    fixPlace(known || { code: qrCode, name: (params.get("n") || qrCode).slice(0, 60) });
+  }
+  $("place-change").addEventListener("click", function () {
+    place = null; $("place-fixed").hidden = true; $("place-pick").hidden = false; sel.focus();
+  });
+
+  // ---- 2 & 3. issues and urgency come from the shared list (issues.json)
+  function choice(type, name, value, text, extra) {
+    var l = document.createElement("label"); l.className = "choice" + (extra ? " " + extra : "");
+    var i = document.createElement("input"); i.type = type; i.name = name; i.value = value;
+    var s = document.createElement("span"); s.textContent = text;
+    l.appendChild(i); l.appendChild(s); return l;
+  }
+  var schemaReady = fetch("../assets/issues.json", { cache: "no-cache" }).then(function (r) { return r.json(); })
+    .then(function (schema) {
+      schema.issues.forEach(function (it) {
+        $("issues").appendChild(choice("checkbox", "issue", it.code, it.label, it.code === "emergency" ? "danger" : ""));
+      });
+      schema.urgency.forEach(function (u) { $("urgency").appendChild(choice("radio", "urgency", u.code, u.label)); });
+      document.querySelector('input[name=urgency][value=medium]').checked = true;
+      for (var n = 1; n <= 5; n++) {
+        var c = choice("radio", "rating", String(n), ""); c.querySelector("span").innerHTML =
+          "<b>" + n + "</b>" + ["Very dirty", "Dirty", "OK", "Clean", "Very clean"][n - 1];
+        c.querySelector("input").setAttribute("aria-label", n + " of 5");
+        $("rating").appendChild(c);
+      }
+      document.querySelector('input[value=emergency]').addEventListener("change", function (e) {
+        $("emergency-note").hidden = !e.target.checked;
+        if (e.target.checked) document.querySelector('input[name=urgency][value=high]').checked = true;
+      });
+    })
+    .catch(function () { showError("Couldn't load the form. Check your internet connection and reload the page."); });
+
+  // ---- details counter
+  $("details").addEventListener("input", function () { $("count").textContent = $("details").value.length + "/500"; });
+
+  var msg = $("msg"), btn = $("submit");
+  function showError(text) { msg.textContent = text; msg.className = "msg error"; msg.scrollIntoView({ block: "nearest" }); }
+  $("form").addEventListener("input", function (e) { if (e.target.id !== "details") msg.className = "msg"; });
+
+  $("form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    schemaReady.then(send);
+  });
+
+  function send() {
+    var loc = place;
+    if (!loc) {
+      if (sel.value === "__other") {
+        var t = $("location-other").value.replace(/\s+/g, " ").trim();
+        if (t.length < 2) return showError("Please type where the problem is.");
+        loc = { code: "", name: t };
+      } else if (sel.value) {
+        loc = locations.filter(function (l) { return l.code === sel.value; })[0];
+      } else {
+        return showError("Please choose which restroom.");
+      }
+    }
+    var issues = [].map.call(document.querySelectorAll("input[name=issue]:checked"), function (i) { return i.value; });
+    if (!issues.length) return showError("Please choose at least one problem.");
+    var urgency = (document.querySelector("input[name=urgency]:checked") || {}).value || "medium";
+    var rating = (document.querySelector("input[name=rating]:checked") || {}).value;
+    var details = $("details").value.trim().slice(0, 500);
+    if (issues.indexOf("other") >= 0 && details.length < 3) return showError("Please describe the problem in “Anything else”.");
+    var cname = $("cname").value.replace(/\s+/g, " ").trim().slice(0, 60);
+    var cphoneRaw = $("cphone").value.trim(), cphone = cphoneRaw ? A.normalizePhone(cphoneRaw) : null;
+    if (cphoneRaw && !cphone) return showError("That mobile number doesn't look right, e.g. 917 123 4567.");
+
+    var last = parseInt(A.store.get("aureoclean.lastReport") || "0", 10);
+    if (Date.now() - last < 60000 && issues.indexOf("emergency") < 0) {
+      return showError("You just sent a report. Please wait a minute before sending another.");
+    }
+
+    var refId = A.randomId(20);
+    function done() {
+      A.store.set("aureoclean.lastReport", String(Date.now()));
+      $("ref").textContent = refId.slice(0, 6).toUpperCase();
+      $("done-place").textContent = loc.name;
+      $("done-emergency").hidden = issues.indexOf("emergency") < 0 && urgency !== "high";
+      $("form-card").hidden = true; $("done-card").hidden = false; $("done-card").focus && window.scrollTo(0, 0);
+    }
+    if ($("website").value) return done(); // bot trap
+
+    var fields = { location: A.v.str(loc.name), issues: A.v.list(issues), urgency: A.v.str(urgency),
+                   deviceId: A.v.str(A.deviceId()), source: A.v.str(source) };
+    if (loc.code) fields.locationCode = A.v.str(loc.code);
+    if (rating) fields.rating = A.v.int(rating);
+    if (details) fields.details = A.v.str(details);
+    if (cname) fields.contactName = A.v.str(cname);
+    if (cphone) fields.contactPhone = A.v.str(cphone);
+
+    btn.disabled = true; btn.textContent = "Sending…";
+    A.createDoc("aureoPublicReports", refId, fields).then(function (r) {
+      btn.disabled = false; btn.textContent = "Send report";
+      if (r.ok) return done();
+      if (r.status === 0) return showError("No internet connection. Check your data or Wi-Fi and try again.");
+      if (r.status === 429) return showError("Too many reports right now. Please try again in a minute.");
+      showError("Couldn't send the report (error " + r.status + "). Please try again.");
+    });
+  }
+
+  $("again").addEventListener("click", function () {
+    [].forEach.call(document.querySelectorAll("input[name=issue], input[name=rating]"), function (i) { i.checked = false; });
+    document.querySelector('input[name=urgency][value=medium]').checked = true;
+    $("details").value = ""; $("count").textContent = "0/500"; $("emergency-note").hidden = true;
+    $("done-card").hidden = true; $("form-card").hidden = false; window.scrollTo(0, 0);
+  });
+})();
+</script>
+</body>
+</html>

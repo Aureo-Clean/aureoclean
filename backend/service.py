@@ -22,7 +22,7 @@ import re
 import secrets
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from .config import Settings
@@ -227,6 +227,13 @@ def _public_profile(profile: dict) -> dict:
     return out
 
 
+def _as_iso(value) -> str:
+    """Firestore returns datetimes; the local store returns strings."""
+    if isinstance(value, datetime):
+        return iso(value)
+    return str(value) if value else iso(utcnow())
+
+
 def _expired(value: Optional[str]) -> bool:
     return not value or parse_iso(value) <= utcnow()
 
@@ -245,6 +252,7 @@ class AureoService:
         self.C_AUDIT = f"{prefix}AuditLogs"
         self.C_WEB_SIGNUPS = f"{prefix}WebSignups"   # written by the public sign-up website (create-only)
         self.C_REPORTS = f"{prefix}Reports"
+        self.C_PUBLIC_REPORTS = f"{prefix}PublicReports"  # written by the public report page (create-only)
         self.C_SESSIONS = f"{prefix}Sessions"
         self.sessions = SessionManager(settings.session_hours, store, self.C_SESSIONS)
         self.login_failures = FailureTracker(settings.max_login_failures, settings.login_lockout_minutes)
@@ -1076,14 +1084,22 @@ class AureoService:
         return {"requestId": request_id, "username": username}
 
     def import_web_signups(self) -> int:
-        """Move sign-ups from the website into Requests. Run every few seconds by the backend."""
+        """Move sign-ups from the website into Requests. Run every few seconds by the backend.
+
+        The website's document ID is the device's ID. After importing, the document is
+        replaced by an anonymous marker (no name/number), so the database keeps refusing
+        another sign-up from that device."""
         count = 0
         for doc_id, data in self.store.query(self.C_WEB_SIGNUPS):
+            if data.get("processed"):
+                continue
+            outcome = "imported"
             try:
                 self.submit_web_signup(data.get("fullName", ""), data.get("phone", ""), data.get("email", ""))
                 count += 1
             except ServiceError as exc:
-                self.audit("web_signup_rejected", {"type": "system", "username": "web"}, doc_id,
+                outcome = "rejected"
+                self.audit("web_signup_rejected", {"type": "system", "username": "web"}, doc_id[:8],
                            {"reason": exc.message, "phone": mask_phone(str(data.get("phone", "")))})
                 try:
                     self.sms.send(normalize_phone(data.get("phone", "")),
@@ -1091,7 +1107,65 @@ class AureoService:
                 except (SmsError, ValueError):
                     pass
             finally:
-                self.store.delete(self.C_WEB_SIGNUPS, doc_id)
+                self.store.set(self.C_WEB_SIGNUPS, doc_id,
+                               {"processed": True, "processedAt": iso(utcnow()), "outcome": outcome})
+        return count
+
+    # ------------------------------------------------ public reports (report page / QR codes)
+    PUBLIC_REPORTS_PER_DEVICE_PER_HOUR = 6
+    PUBLIC_REPORTS_PER_HOUR = 120
+
+    def import_public_reports(self) -> int:
+        """Turn reports from the public page into admin Reports. Run every few seconds."""
+        from .report_schema import category_for, issue_map, priority_for, title_for, urgency_codes
+
+        known = issue_map()
+        hour_ago = iso(utcnow() - timedelta(hours=1))
+        recent = [r for _, r in self.store.query(self.C_REPORTS, source="public") if r.get("createdAt", "") >= hour_ago]
+        count = 0
+        for doc_id, data in self.store.query(self.C_PUBLIC_REPORTS):
+            try:
+                issues = [c for c in data.get("issues") or [] if c in known][:len(known)]
+                device = hashlib.sha256(str(data.get("deviceId", "")).encode()).hexdigest()[:16]
+                from_device = sum(r.get("deviceHash") == device for r in recent)
+                if not issues:
+                    continue
+                if "emergency" not in issues and (from_device >= self.PUBLIC_REPORTS_PER_DEVICE_PER_HOUR
+                                                  or len(recent) >= self.PUBLIC_REPORTS_PER_HOUR):
+                    self.audit("public_report_dropped", {"type": "system", "username": "report-page"}, doc_id[:8],
+                               {"reason": "too many reports", "device": device[:8]})
+                    continue
+                urgency = data.get("urgency") if data.get("urgency") in urgency_codes() else "medium"
+                rating = data.get("rating")
+                rating = rating if isinstance(rating, int) and 1 <= rating <= 5 else None
+                category = category_for(issues)
+                report = self._save_report(
+                    category=category, title=title_for(issues),
+                    location=str(data.get("location", ""))[:60], details=str(data.get("details", ""))[:500],
+                    priority=priority_for(issues, urgency),
+                    created_by={"type": "public", "username": "report page"},
+                    extra={
+                        "source": "public", "channel": data.get("source", "web"), "issues": issues,
+                        "urgency": urgency, "rating": rating, "locationCode": data.get("locationCode") or None,
+                        "deviceHash": device, "publicRef": doc_id[:6].upper(),
+                        "reportedAt": _as_iso(data.get("createdAt")),
+                        "contact": ({"name": str(data.get("contactName", ""))[:60],
+                                     "phone": data.get("contactPhone")}
+                                    if data.get("contactName") or data.get("contactPhone") else None),
+                    })
+                recent.append(report)
+                count += 1
+                # Deterministic alerting (never left to the AI): emergencies text everyone,
+                # urgent problems text the janitors.
+                notify = "everyone" if category == "emergency" else ("janitors" if urgency == "high" else "none")
+                if notify != "none":
+                    label = "EMERGENCY" if category == "emergency" else "URGENT"
+                    text = f"AureoClean {label}: {report['title']} at {report['location']}"
+                    if report["details"]:
+                        text += f". {report['details']}"
+                    self._notify_async(report["id"], self.sms_recipients(None if notify == "everyone" else ROLE_JANITOR), text)
+            finally:
+                self.store.delete(self.C_PUBLIC_REPORTS, doc_id)
         return count
 
     def _approve_sms_contact(self, admin: Session, request_id: str) -> dict:
@@ -1129,7 +1203,8 @@ class AureoService:
                 "message": f"{req['fullName']} is now an SMS contact. {note}"}
 
     # ============================================================ reports
-    REPORT_CATEGORIES = {"emergency": "Emergency", "facility": "Broken facility", "system": "System problem"}
+    REPORT_CATEGORIES = {"emergency": "Emergency", "facility": "Broken facility", "supplies": "Supplies",
+                         "cleanliness": "Cleanliness", "system": "System problem", "other": "Other"}
     REPORT_PRIORITIES = ("low", "normal", "high", "critical")
     REPORT_STATUSES = ("open", "in_progress", "resolved")
 
@@ -1147,14 +1222,9 @@ class AureoService:
             raise BadRequest("Unknown priority.")
         if notify not in ("none", "janitors", "everyone"):
             raise BadRequest("Unknown notify option.")
-        report_id = generate_id()
-        now = iso(utcnow())
-        report = {
-            "category": category, "title": title, "location": location, "details": details, "priority": priority,
-            "status": "open", "createdAt": now, "updatedAt": now,
-            "createdBy": {"uid": admin.uid, "username": admin.username}, "notes": [],
-        }
-        self.store.create(self.C_REPORTS, report_id, report)
+        report = self._save_report(category, title, location, details, priority,
+                                   {"uid": admin.uid, "username": admin.username}, {"source": "admin"})
+        report_id = report.pop("id")
         self.audit("report_created", admin.actor, report_id, {"category": category, "title": title})
         sent = 0
         if notify != "none":
@@ -1166,6 +1236,17 @@ class AureoService:
             sent = len(recipients)
         return {"id": report_id, **report, "notifying": sent,
                 "message": "Report saved." + (f" Texting {sent} people…" if sent else "")}
+
+    def _save_report(self, category, title, location, details, priority, created_by, extra=None) -> dict:
+        report_id = generate_id()
+        now = iso(utcnow())
+        report = {
+            "category": category, "title": title, "location": location, "details": details, "priority": priority,
+            "status": "open", "createdAt": now, "updatedAt": now, "createdBy": created_by, "notes": [],
+            **(extra or {}),
+        }
+        self.store.create(self.C_REPORTS, report_id, report)
+        return {"id": report_id, **report}
 
     def _notify_async(self, report_id: str, recipients: list[dict], text: str) -> None:
         def work():

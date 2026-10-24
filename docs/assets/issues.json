@@ -1,0 +1,29 @@
+{
+  "_about": "Single source of truth for report answers. Used by the report page, the Pi backend and (by test) the Firestore rules. Category order = importance.",
+  "categories": ["emergency", "facility", "supplies", "cleanliness", "other"],
+  "issues": [
+    {"code": "emergency",       "label": "Emergency (fire, smoke, injury, flooding)", "category": "emergency"},
+    {"code": "wet_floor",       "label": "Wet or slippery floor",                    "category": "cleanliness"},
+    {"code": "dirty_floor",     "label": "Dirty floor",                              "category": "cleanliness"},
+    {"code": "dirty_toilet",    "label": "Dirty toilet or urinal",                   "category": "cleanliness"},
+    {"code": "dirty_sink",      "label": "Dirty sink or mirror",                     "category": "cleanliness"},
+    {"code": "bad_odor",        "label": "Bad smell",                                "category": "cleanliness"},
+    {"code": "trash_full",      "label": "Trash bin full",                           "category": "cleanliness"},
+    {"code": "no_soap",         "label": "No soap",                                  "category": "supplies"},
+    {"code": "no_tissue",       "label": "No toilet paper",                          "category": "supplies"},
+    {"code": "no_paper_towel",  "label": "No paper towels",                          "category": "supplies"},
+    {"code": "no_water",        "label": "No water",                                 "category": "facility"},
+    {"code": "clogged_toilet",  "label": "Clogged toilet",                           "category": "facility"},
+    {"code": "broken_flush",    "label": "Flush not working",                        "category": "facility"},
+    {"code": "leak",            "label": "Leak or dripping pipe",                    "category": "facility"},
+    {"code": "broken_faucet",   "label": "Broken faucet",                            "category": "facility"},
+    {"code": "broken_lock",     "label": "Broken door or lock",                      "category": "facility"},
+    {"code": "broken_light",    "label": "Light not working",                        "category": "facility"},
+    {"code": "other",           "label": "Something else",                           "category": "other"}
+  ],
+  "urgency": [
+    {"code": "low",    "label": "It can wait"},
+    {"code": "medium", "label": "Needs attention soon"},
+    {"code": "high",   "label": "Urgent or unsafe"}
+  ]
+}

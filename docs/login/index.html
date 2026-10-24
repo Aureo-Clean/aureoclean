@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; connect-src https://firestore.googleapis.com; base-uri 'none'; form-action 'none'">
+<title>AureoClean Janitor Sign-up</title>
+<link rel="icon" href="../assets/icon.png">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<a class="skip" href="#name">Skip to the form</a>
+<main>
+  <header class="brand">
+    <img src="../assets/logo.svg" alt="">
+    <div>
+      <p class="name">Aureo<span>Clean</span></p>
+      <p class="tag">AUTOMATED HYGIENE MONITORING &amp; MAINTENANCE SYSTEM</p>
+    </div>
+  </header>
+
+  <section class="card" id="form-card" aria-labelledby="t">
+    <h1 id="t">Janitor sign-up</h1>
+    <p class="lead">Sign up to get restroom alerts by text. An administrator approves your request, then you'll
+      receive a welcome SMS. No app needed.</p>
+    <form id="form" novalidate>
+      <label class="label" for="name">Full name</label>
+      <input id="name" type="text" autocomplete="name" maxlength="80" required placeholder="e.g. Mark Dave Agot">
+
+      <label class="label" for="phone">Mobile number</label>
+      <div class="phone">
+        <span aria-hidden="true">+63</span>
+        <input id="phone" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="13" required
+               placeholder="917 123 4567" aria-describedby="phone-hint">
+      </div>
+      <div class="hint" id="phone-hint">The number where alerts will be sent.</div>
+
+      <label class="label" for="email">Email <span class="opt">(optional)</span></label>
+      <input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com">
+
+      <div class="trap" aria-hidden="true">
+        <label for="website">Leave this empty</label>
+        <input id="website" type="text" tabindex="-1" autocomplete="off">
+      </div>
+
+      <label class="consent">
+        <input id="consent" type="checkbox">
+        <span>I agree to receive AureoClean maintenance alerts by SMS on this number.</span>
+      </label>
+
+      <button class="btn" id="submit" type="submit">Send sign-up request</button>
+      <div id="msg" class="msg" role="alert" aria-live="assertive"></div>
+    </form>
+  </section>
+
+  <section class="card done" id="done-card" hidden aria-live="polite">
+    <div class="tick" aria-hidden="true">✓</div>
+    <h1>Request sent!</h1>
+    <p class="lead">Thank you. Here's what happens next:</p>
+    <ol>
+      <li>An administrator reviews your request.</li>
+      <li>Once approved, you'll get a <b>welcome text</b> on <b id="done-phone"></b>.</li>
+      <li>After that, restroom alerts arrive by SMS.</li>
+    </ol>
+  </section>
+
+  <section class="card" id="used-card" hidden>
+    <h1>This device already sent a sign-up</h1>
+    <p class="lead">Each phone or computer can send one sign-up request. If you need to change your details,
+      ask an administrator.</p>
+    <a class="btn ghost" href="../report/">Report a restroom problem instead</a>
+  </section>
+
+  <footer>STI College Caloocan · AureoClean</footer>
+</main>
+
+<script src="../assets/config.js"></script>
+<script src="../assets/aureo.js"></script>
+<script>
+(function () {
+  "use strict";
+  var A = window.Aureo;
+  var form = document.getElementById("form"), msg = document.getElementById("msg"), btn = document.getElementById("submit");
+
+  function show(id) {
+    ["form-card", "done-card", "used-card"].forEach(function (c) { document.getElementById(c).hidden = c !== id; });
+  }
+  if (A.store.get("aureoclean.signedUp")) show("used-card");
+
+  function showError(text) { msg.textContent = text; msg.className = "msg error"; }
+  form.addEventListener("input", function () { msg.className = "msg"; });
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var name = document.getElementById("name").value.replace(/\s+/g, " ").trim();
+    var phone = A.normalizePhone(document.getElementById("phone").value);
+    var email = document.getElementById("email").value.trim().toLowerCase();
+    if (name.length < 2) return showError("Please enter your full name.");
+    if (!phone) return showError("Enter a valid mobile number, e.g. 917 123 4567.");
+    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) return showError("That email doesn't look right.");
+    if (!document.getElementById("consent").checked) return showError("Please tick the box to agree to receive SMS alerts.");
+
+    function done() {
+      A.store.set("aureoclean.signedUp", "1");
+      document.getElementById("done-phone").textContent = A.prettyPhone(phone);
+      show("done-card");
+    }
+    if (document.getElementById("website").value) return done(); // bot trap: pretend success
+
+    var device = A.deviceId();
+    var fields = { fullName: A.v.str(name), phone: A.v.str(phone), consent: A.v.bool(true),
+                   source: A.v.str("web"), deviceId: A.v.str(device) };
+    if (email) fields.email = A.v.str(email);
+
+    btn.disabled = true; btn.textContent = "Sending…";
+    A.createDoc("aureoWebSignups", device, fields).then(function (r) {
+      btn.disabled = false; btn.textContent = "Send sign-up request";
+      if (r.ok) return done();
+      // The sign-up's ID is this device's ID: a second one is refused by the database.
+      if (r.status === 403 || r.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(r.text)) {
+        A.store.set("aureoclean.signedUp", "1");
+        return show("used-card");
+      }
+      if (r.status === 0) return showError("No internet connection. Check your data or Wi-Fi and try again.");
+      if (r.status === 429) return showError("Too many requests right now. Please try again in a minute.");
+      showError("Couldn't send your request (error " + r.status + "). Please try again.");
+    });
+  });
+})();
+</script>
+</body>
+</html>

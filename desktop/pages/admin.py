@@ -63,6 +63,7 @@ ACTION_LABELS = {
     "janitor_contact_approved": "Janitor added as SMS contact",
     "report_created": "Report created",
     "report_updated": "Report updated",
+    "public_report_dropped": "Public report dropped (too many)",
     "admin_email_verified": "Admin email verified",
     "verification_email_sent": "Verification email sent",
 }
@@ -206,7 +207,8 @@ class RequestsTab(_Tab):
 
 
 # ====================================================================== reports
-REPORT_TYPES = [("Emergency", "emergency"), ("Broken facility", "facility"), ("System problem", "system")]
+REPORT_TYPES = [("Emergency", "emergency"), ("Broken facility", "facility"), ("Supplies", "supplies"),
+                ("Cleanliness", "cleanliness"), ("System problem", "system"), ("Other", "other")]
 PRIORITIES = [("Critical", "critical"), ("High", "high"), ("Normal", "normal"), ("Low", "low")]
 STATUS_LABELS = {"open": "Open", "in_progress": "In progress", "resolved": "Resolved"}
 TYPE_LABELS = dict((v, k) for k, v in REPORT_TYPES)
@@ -309,7 +311,7 @@ class ReportsTab(_Tab):
         bar.addWidget(button("+ New report", "Gold", self.new_report))
         self.layout_.addLayout(bar)
 
-        self.table = make_table(["Priority", "Type", "What", "Where", "Status", "Reported", "Updated"])
+        self.table = make_table(["Priority", "Type", "What", "Where", "From", "Status", "Reported"])
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.table.itemDoubleClicked.connect(lambda *_: self.details())
         self.layout_.addWidget(self.table, 1)
@@ -341,8 +343,10 @@ class ReportsTab(_Tab):
                 pri.setText(r["priority"].capitalize())
                 st = status_item({"open": "pending", "in_progress": "approved", "resolved": "active"}[r["status"]])
                 st.setText(STATUS_LABELS[r["status"]])
+                origin = {"qr": "QR code", "web": "Report page"}.get(r.get("channel"), "Admin") \
+                    if r.get("source") == "public" else "Admin"
                 data.append([pri, TYPE_LABELS.get(r["category"], r["category"]), r["title"], r.get("location") or "—",
-                             st, fmt_time(r.get("createdAt")), fmt_time(r.get("updatedAt"))])
+                             origin, st, fmt_time(r.get("createdAt"))])
             fill_table(self.table, data, rows)
             if rows:
                 self.message.clear()
@@ -395,6 +399,13 @@ class ReportsTab(_Tab):
                  f"{STATUS_LABELS[r['status']]}",
                  f"Where: {r.get('location') or '—'}",
                  f"Reported {fmt_time(r.get('createdAt'))} by {(r.get('createdBy') or {}).get('username', '?')}"]
+        if r.get("source") == "public":
+            urgency = {"low": "It can wait", "medium": "Needs attention soon", "high": "Urgent or unsafe"}
+            lines.append(f"Public report {r.get('publicRef', '')} · urgency: {urgency.get(r.get('urgency'), '?')}"
+                         + (f" · cleanliness {r['rating']}/5" if r.get("rating") else ""))
+            if r.get("contact"):
+                c = r["contact"]
+                lines.append(f"Contact: {c.get('name') or '—'} {c.get('phone') or ''}".rstrip())
         if r.get("details"):
             lines += ["", r["details"]]
         if r.get("notes"):

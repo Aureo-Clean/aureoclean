@@ -168,25 +168,52 @@ It finds the right speed by itself and prints the exact settings to put in the c
 > short demo, use a 4G module such as a **SIM7600** or **A7670** — they speak the
 > same AT commands, so only the wiring and power change, not the code.
 
-## Janitor sign-up website
+## Public web pages (GitHub Pages, `docs/`)
 
-`docs/` is a one-page website (GitHub Pages) where janitors sign up from their phone:
-full name, mobile number, optional email, and SMS consent.
+| Page | Link | What it does |
+|---|---|---|
+| Home | `https://aureo-clean.github.io/aureoclean/` | Two buttons: report a problem, janitor sign-up |
+| **Report** | `https://aureo-clean.github.io/aureoclean/report/` | Anyone reports a restroom problem (replaces Google Forms) |
+| **Sign-up** | `https://aureo-clean.github.io/aureoclean/login/` | Janitors sign up for SMS alerts |
 
-- The link contains a secret **join code**: `https://aureo-clean.github.io/aureoclean/?join=YOURCODE`.
-  The code is checked by the Firestore rules (`firestore.rules`), not stored in this repository.
-  Changing the code in the rules disables every old link.
-- The site can only *create* a sign-up in `aureoWebSignups`; it can't read or change anything.
-- The Pi backend collects new sign-ups every 20 s into **Requests** (marked "Website").
-  Duplicate or invalid numbers are rejected and the person gets a text explaining why.
-- **Approve** turns the person into an **SMS contact** (no app sign-in) and texts them a welcome message.
+Both pages work on phones and computers, in light and dark mode, with a keyboard and with
+screen readers. They can only *create* entries (`firestore.rules`); they can't read anything.
+
+**Sign-up, one per device:** each phone/computer browser gets a random device ID that becomes the
+sign-up's ID in the database, so a second sign-up from the same device is refused. After the Pi
+imports it, only an anonymous "already used" marker remains. (Clearing the browser's data gives a
+new ID — duplicate mobile numbers are still refused.) Approving a sign-up makes the person an
+**SMS contact** and texts a welcome message.
+
+**Report questions** (`docs/assets/issues.json` — one list shared by the page, the Pi and the rules):
+1. Which restroom? (filled in automatically from the QR code)
+2. What's the problem? (several: emergency, wet floor, dirty, smell, trash, no soap/tissue/paper
+   towels, no water, clogged, flush, leak, faucet, door/lock, light, something else)
+3. How urgent? (can wait / soon / urgent or unsafe)
+4. How clean is it right now? (1–5, optional)
+5. Anything else? (optional text)
+6. Contact for follow-up (optional name + number)
+
+The Pi imports reports every 20 s into the **Reports** tab. Fixed rules (no AI) decide what
+happens: emergencies are *critical* and text everyone; "urgent" texts the janitors. Too many reports
+from one device (6/hour) are dropped, except emergencies.
+
+**QR codes:** `docs/qr/` has a general code, one per restroom (`report/?r=CODE` fills in the
+restroom), a sign-up code, and printable A4 posters (`docs/qr/posters.html`). For a new restroom:
+`.venv/bin/python tools/make_qr.py 4F-M "4th Floor · Male"` and add it to `docs/assets/config.js`.
+
+**Ready for AI analysis:** `backend/analysis.py` turns reports into clean records (no personal data),
+computes patterns (by restroom, issue, hour, weekday, cleanliness, time to fix, recurring problems)
+and builds a ready-to-send prompt; `analyze(service, ask=...)` sends it to any LLM you plug in.
+`.venv/bin/python tools/export_reports.py` writes JSONL, CSV, summary and prompt files to `exports/`.
 
 Setup: GitHub repo → Settings → Pages → Deploy from a branch → `main` / `docs`. Then paste
-`firestore.rules` (with your join code) into Firebase Console → Firestore → Rules → Publish.
+`firestore.rules` into Firebase Console → Firestore → Rules → Publish.
 
 ## Reports tab (admin)
 
-Log **emergencies**, **broken facilities** and **system problems** with type, priority, location and
+Public reports arrive here automatically (column "From": QR code / Report page). Admins can also log
+**emergencies**, **broken facilities**, **supplies**, **cleanliness** and **system problems** with type, priority, location and
 details; move them Open → In progress → Resolved, add notes, and see the full history.
 Optionally text the janitors (or everyone with SMS on) when saving: the result of the texts is
 added to the report's history. The tab name shows the number of open reports.

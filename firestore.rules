@@ -2,15 +2,13 @@ rules_version = '2';
 
 // AureoClean Firestore rules.
 //
-// * Everything AureoClean stores is only touched by the backend on the Raspberry Pi,
-//   which uses the Admin SDK (Admin SDK access bypasses these rules), so clients get no access.
-// * The ONE exception: the public janitor sign-up website may CREATE a sign-up in
-//   aureoWebSignups — only with the expected fields, only with the secret join code from
-//   the sign-up link, and it can never read, change or delete anything.
-//
-// Replace REPLACE_WITH_YOUR_JOIN_CODE with your own code when you paste this into
-// Firebase Console > Firestore Database > Rules. Never commit the real code to GitHub.
-// Changing the code here makes every old sign-up link stop working.
+// * Everything AureoClean stores is only touched by the backend on the Raspberry Pi, which
+//   uses the Admin SDK (that bypasses these rules), so phones and browsers get no access...
+// * ...except the two public web pages, which may only CREATE (never read/change/delete):
+//     - aureoWebSignups:    janitor sign-up. The document ID must be the device's ID, so the
+//                           database refuses a second sign-up from the same phone/computer.
+//                           (The Pi keeps an anonymised marker after importing it.)
+//     - aureoPublicReports: restroom problem reports from the report page / QR codes.
 //
 // IMPORTANT: if this project already has rules for other collections (complaints,
 // QR feedback, ...), MERGE these blocks into the existing rules instead of replacing them.
@@ -24,24 +22,66 @@ service cloud.firestore {
     match /aureoSessions/{doc=**}              { allow read, write: if false; }
     match /aureoReports/{doc=**}               { allow read, write: if false; }
 
-    match /aureoWebSignups/{signupId} {
-      allow create: if signupId.size() <= 40
+    function optionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    // ---------------------------------------------------------------- janitor sign-up
+    match /aureoWebSignups/{deviceId} {
+      allow create: if deviceId.matches('^[A-Za-z0-9]{24}$')
+        && request.resource.data.deviceId == deviceId
         && request.resource.data.keys().hasOnly(
-             ['fullName', 'phone', 'email', 'consent', 'source', 'joinCode', 'createdAt'])
+             ['fullName', 'phone', 'email', 'consent', 'source', 'deviceId', 'createdAt'])
         && request.resource.data.keys().hasAll(
-             ['fullName', 'phone', 'consent', 'source', 'joinCode', 'createdAt'])
-        && request.resource.data.joinCode == 'REPLACE_WITH_YOUR_JOIN_CODE'
+             ['fullName', 'phone', 'consent', 'source', 'deviceId', 'createdAt'])
         && request.resource.data.fullName is string
         && request.resource.data.fullName.size() >= 2
         && request.resource.data.fullName.size() <= 80
         && request.resource.data.phone is string
         && request.resource.data.phone.matches('^[+]639[0-9]{9}$')
+        && optionalString(request.resource.data, 'email', 254)
         && (!('email' in request.resource.data)
-            || (request.resource.data.email is string
-                && request.resource.data.email.size() <= 254
-                && request.resource.data.email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$')))
+            || request.resource.data.email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$'))
         && request.resource.data.consent == true
         && request.resource.data.source == 'web'
+        && request.resource.data.createdAt == request.time;
+      allow read, update, delete: if false;
+    }
+
+    // ---------------------------------------------------------------- public reports
+    match /aureoPublicReports/{reportId} {
+      allow create: if reportId.matches('^[A-Za-z0-9]{20}$')
+        && request.resource.data.keys().hasOnly(
+             ['location', 'locationCode', 'issues', 'urgency', 'rating', 'details',
+              'contactName', 'contactPhone', 'deviceId', 'source', 'createdAt'])
+        && request.resource.data.keys().hasAll(
+             ['location', 'issues', 'urgency', 'deviceId', 'source', 'createdAt'])
+        && request.resource.data.location is string
+        && request.resource.data.location.size() >= 2
+        && request.resource.data.location.size() <= 60
+        && (!('locationCode' in request.resource.data)
+            || (request.resource.data.locationCode is string
+                && request.resource.data.locationCode.matches('^[A-Za-z0-9-]{1,30}$')))
+        && request.resource.data.issues is list
+        && request.resource.data.issues.size() >= 1
+        && request.resource.data.issues.size() <= 18
+        && request.resource.data.issues.hasOnly([
+                 'emergency', 'wet_floor', 'dirty_floor', 'dirty_toilet', 'dirty_sink',
+                 'bad_odor', 'trash_full', 'no_soap', 'no_tissue', 'no_paper_towel',
+                 'no_water', 'clogged_toilet', 'broken_flush', 'leak', 'broken_faucet',
+                 'broken_lock', 'broken_light', 'other'])
+        && request.resource.data.urgency in ['low', 'medium', 'high']
+        && (!('rating' in request.resource.data)
+            || (request.resource.data.rating is int
+                && request.resource.data.rating >= 1 && request.resource.data.rating <= 5))
+        && optionalString(request.resource.data, 'details', 500)
+        && optionalString(request.resource.data, 'contactName', 60)
+        && (!('contactPhone' in request.resource.data)
+            || (request.resource.data.contactPhone is string
+                && request.resource.data.contactPhone.matches('^[+]639[0-9]{9}$')))
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.matches('^[A-Za-z0-9]{24}$')
+        && request.resource.data.source in ['qr', 'web']
         && request.resource.data.createdAt == request.time;
       allow read, update, delete: if false;
     }

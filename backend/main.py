@@ -320,18 +320,19 @@ def run() -> None:
 
 
 def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
-    """Collect janitor sign-ups from the website into Requests, every few seconds."""
+    """Collect janitor sign-ups and public reports from the website, every few seconds."""
     import threading
     import time
 
     def loop():
         while True:
-            try:
-                n = service.import_web_signups()
-                if n:
-                    log.info("Imported %d website sign-up(s)", n)
-            except Exception:  # noqa: BLE001 - keep trying (e.g. internet down)
-                log.warning("Website sign-up import failed; will retry", exc_info=True)
+            for name, job in (("sign-up", service.import_web_signups), ("report", service.import_public_reports)):
+                try:
+                    n = job()
+                    if n:
+                        log.info("Imported %d website %s(s)", n, name)
+                except Exception:  # noqa: BLE001 - keep trying (e.g. internet down)
+                    log.warning("Website %s import failed; will retry", name, exc_info=True)
             time.sleep(every)
 
     threading.Thread(target=loop, daemon=True, name="web-signup-import").start()
