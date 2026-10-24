@@ -1,6 +1,6 @@
 """AureoClean desktop app (PySide6).
 
-Run from the project folder:  python -m desktop.app [--fullscreen | --maximized | --kiosk]
+Run from the project folder:  python -m desktop.app [--fullscreen | --maximized]
 The backend must already be running (run_local.sh starts both).
 """
 from __future__ import annotations
@@ -18,8 +18,8 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-vulkan --disable-
 
 import time
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QCoreApplication, Qt, QTimer
+from PySide6.QtGui import QCursor, QIcon
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QLineEdit, QMainWindow, QScrollArea, QStackedWidget
 
 from .api import ApiClient, ApiError
@@ -40,10 +40,10 @@ class MainWindow(QMainWindow):
         self.resize(800, 480)  # the project's 7-inch display
         self.api = ApiClient()
         self.user = None
-        # Kiosk mode (tools/kiosk.sh): the window can't be closed by accident; only
-        # Tools → "Close AureoClean" quits, and anything else (a crash) is reopened.
-        self.kiosk = "--kiosk" in sys.argv
-        self.allow_close = not self.kiosk
+        # Kiosk mode is a switch inside the app (Tools → Kiosk mode): full screen, the
+        # window can't be closed by accident, and the screen locks when nobody uses it.
+        # The app always starts in a normal window.
+        self.kiosk = False
 
         # One Arduino dashboard for the whole app, shown in both the admin and janitor screens.
         self.dashboard = DashboardPanel()
@@ -63,8 +63,10 @@ class MainWindow(QMainWindow):
         for page in self.pages.values():
             self.stack.addWidget(page)
         self.show_login()
-        # Idle lock: any touch, click or key press counts as "in use".
+        # Idle lock (kiosk mode only). "In use" = the pointer moved (every touch moves it)
+        # or the keyboard focus changed. Checked every 15 s; no app-wide event hook.
         self.last_activity = time.monotonic()
+        self._last_pos = QCursor.pos()
         self._idle = QTimer(self)
         self._idle.timeout.connect(self._check_idle)
         self._idle.start(15_000)
@@ -101,23 +103,35 @@ class MainWindow(QMainWindow):
         run_async(self.api.links, show, lambda e: self.dashboard.set_url(""))
 
     def closeEvent(self, event):  # noqa: N802 (Qt name)
-        if self.allow_close:
-            event.accept()
-        else:
+        if self.kiosk:  # leave kiosk mode first (Tools, or "Exit kiosk mode…" on sign-in)
             event.ignore()
+        else:
+            event.accept()
 
-    def quit_app(self):
-        """Close on purpose (exit code 0 tells kiosk.sh not to reopen it)."""
-        self.allow_close = True
-        QApplication.instance().exit(0)
+    def set_kiosk(self, on: bool) -> None:
+        """Turn kiosk mode on or off right away."""
+        self.kiosk = bool(on)
+        self.touched()
+        if self.kiosk:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+            self.showMaximized()
+        for page in self.pages.values():
+            if hasattr(page, "kiosk_changed"):
+                page.kiosk_changed(self.kiosk)
 
     # ------------------------------------------------------------ idle lock
     def touched(self):
         self.last_activity = time.monotonic()
 
     def _check_idle(self):
+        pos = QCursor.pos()
+        if pos != self._last_pos:
+            self._last_pos = pos
+            self.touched()
         minutes = int((self.user or {}).get("idleLockMinutes") or 0)
-        if not (self.user and minutes and self.api.token):
+        if not (self.kiosk and self.user and minutes and self.api.token):
             return
         if self.stack.currentWidget() is self.pages["lock"]:
             return
@@ -174,21 +188,6 @@ def keep_focus_visible(old, new):
         parent = parent.parentWidget()
 
 
-class ActivityFilter(QObject):
-    """Sees every input event in the app (including the embedded dashboard)."""
-
-    KINDS = {QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.TouchBegin, QEvent.Wheel, QEvent.TabletPress}
-
-    def __init__(self, window):
-        super().__init__()
-        self.window = window
-
-    def eventFilter(self, obj, event):  # noqa: N802 (Qt name)
-        if event.type() in self.KINDS:
-            self.window.touched()
-        return False
-
-
 def _log_crashes() -> None:
     """Write any error, or a hard crash, to logs/desktop-crash.log (the icon has no terminal)."""
     import faulthandler
@@ -216,8 +215,8 @@ def main() -> int:
     _log_crashes()
     # Needed by the embedded dashboard (Qt WebEngine); must be set before the app starts.
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
-    # Our own options (--kiosk, --fullscreen, --maximized) stay ours: Qt hands its arguments
-    # to the dashboard's built-in Chromium, which has a --kiosk mode of its own.
+    # Our own options (--fullscreen, --maximized) stay ours: Qt hands its arguments on
+    # to the dashboard's built-in Chromium.
     app = QApplication(sys.argv[:1])
     app.setApplicationName("AureoClean")
     app.setDesktopFileName("aureoclean")
@@ -234,11 +233,10 @@ def main() -> int:
     instance_lock.setStaleLockTime(0)
     if not instance_lock.tryLock(2000):
         QMessageBox.information(None, "AureoClean", "AureoClean is already open on this Pi.")
-        return 3  # not 0: kiosk mode tries again later instead of stopping
+        return 3
     window = MainWindow()
-    activity = ActivityFilter(window)
-    app.installEventFilter(activity)
-    if "--fullscreen" in sys.argv or window.kiosk:
+    app.focusChanged.connect(lambda *_: window.touched())
+    if "--fullscreen" in sys.argv:
         window.showFullScreen()
     elif "--maximized" in sys.argv:
         window.showMaximized()

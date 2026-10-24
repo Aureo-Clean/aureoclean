@@ -38,6 +38,7 @@ if systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null; then
   SERVICE=1
   systemctl --user stop "$UNIT" 2>/dev/null
 fi
+pkill -f "tools/kiosk.sh" 2>/dev/null   # the old kiosk restart loop (no longer used)
 pkill -f "desktop.app" 2>/dev/null
 pkill -f "backend.main" 2>/dev/null
 sleep 1
@@ -94,9 +95,5 @@ if [ -n "$SERVICE" ]; then
   systemctl --user start "$UNIT" 2>/dev/null
 fi
 rm -f "$APP_DIR/.updating"
-if pgrep -f "tools/kiosk.sh" >/dev/null; then
-  echo "Kiosk mode will reopen it full-screen in a moment."
-else
-  setsid ./run_local.sh --maximized >/dev/null 2>&1 < /dev/null &
-fi
+setsid ./run_local.sh --maximized >/dev/null 2>&1 < /dev/null &
 sleep 2

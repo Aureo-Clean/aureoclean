@@ -237,20 +237,18 @@ a phone to `~/.config/aureoclean/aureoclean.env` as
 
 ## Kiosk mode (7" screen)
 
-    ./tools/install_kiosk.sh          # once; then sudo reboot
+Kiosk mode is a switch: **Tools → Kiosk mode**. While it's on, the app is full
+screen, can't be closed by accident, and locks after 5 minutes without use
+(unlock with a 4–6 digit PIN from Account → **Screen-lock PIN…**, or the
+password). To leave it: untick the switch, or press **Exit kiosk mode…** on the
+sign-in screen (an admin's username and password are needed). The app always
+starts in a normal window. Change the lock time with
+`AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never lock).
 
-* The service (SMS, website imports, alerts) runs in the background from boot
-  and restarts itself if it crashes.
-* The app opens full-screen at boot and reopens if it closes or crashes
-  (`tools/kiosk.sh`). To close it on purpose: Tools → **Close AureoClean**.
-* After 5 minutes without a touch the screen locks. Unlock with a 4–6 digit PIN
-  (Account → **Screen-lock PIN…**), or the password if no PIN is set. Five wrong
-  tries sign the person out. **Lock** in the top bar locks it right away.
-  Change the minutes with `AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never).
-* "Update AureoClean" works as before; kiosk mode reopens the new version.
-* To leave kiosk mode from the sign-in screen: **Exit kiosk mode…** (needs an
-  admin's username and password). Turn it back on in Tools → Kiosk mode.
-* Undo everything (also the background service) with `./tools/install_kiosk.sh --remove`.
+Optional: `./tools/install_service.sh` runs the service (texts, replies, website
+reports) in the background from boot and restarts it if it crashes, so closing the
+window doesn't stop alerts. Add `--autostart` to also open the app at boot;
+`--remove` undoes it.
 
 ## Updating to a new version
 

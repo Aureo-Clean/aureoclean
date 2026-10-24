@@ -155,8 +155,8 @@ class DashboardPanel(QWidget):
         self._fail_timer = QTimer(self)
         self._fail_timer.setSingleShot(True)
         self._fail_timer.timeout.connect(self._really_failed)
-        # Safe mode (set by kiosk.sh after the app closed by itself twice in a row):
-        # start without the embedded browser so signing in always works.
+        # Safe mode: AUREOCLEAN_SAFE_MODE=1 ./run_local.sh starts without the embedded
+        # browser, so the rest of the app works even if the dashboard viewer crashes.
         self.safe_mode = os.environ.get("AUREOCLEAN_SAFE_MODE") == "1"
         if HAS_WEBENGINE and not self.safe_mode:
             self.profile = _make_profile(self)
@@ -194,9 +194,8 @@ class DashboardPanel(QWidget):
         if self.view is None and self.safe_mode:
             self.url = url
             self._message("Dashboard paused (safe mode)",
-                          "AureoClean closed by itself twice while starting, so it was reopened without the "
-                          "built-in dashboard. Everything else works. The dashboard comes back the next time the "
-                          "app starts normally; details are in logs/desktop-crash.log.")
+                          "AureoClean was started without the built-in dashboard (safe mode). Everything else "
+                          "works. Start it normally to bring the dashboard back.")
             return
         if self.view is None:
             self.url = url

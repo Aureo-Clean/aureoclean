@@ -57,9 +57,12 @@ class _Signals(QObject):
             self._finish()
 
     def _finish(self):
-        if self._on_finally:
-            self._on_finally()
-        _ACTIVE.discard(self)
+        try:
+            if self._on_finally:
+                self._on_finally()
+        finally:
+            self.job = None
+            _ACTIVE.discard(self)
 
 
 class _Job(QRunnable):
@@ -83,9 +86,19 @@ _ACTIVE: set[_Signals] = set()
 
 def run_async(fn: Callable, on_ok=None, on_err=None, on_finally=None) -> None:
     """Run a blocking API call off the GUI thread so the window never freezes."""
+    pool = QThreadPool.globalInstance()
+    # Slow calls (modem, Firebase) shouldn't make the quick ones wait in a queue.
+    if pool.maxThreadCount() < 12:
+        pool.setMaxThreadCount(12)
     signals = _Signals(on_ok, on_err, on_finally)
+    job = _Job(fn, signals)
+    # Keep the job alive from Python until its callbacks have run. Qt deleting it on its
+    # own (or Python collecting a queued job) crashed the app when many calls started at
+    # once, e.g. right after signing in.
+    job.setAutoDelete(False)
+    signals.job = job
     _ACTIVE.add(signals)
-    QThreadPool.globalInstance().start(_Job(fn, signals))
+    pool.start(job)
 
 
 # ---------------------------------------------------------------- layout helpers

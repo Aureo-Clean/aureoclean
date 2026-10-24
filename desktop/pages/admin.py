@@ -2,8 +2,6 @@
 Laid out for the 7-inch 800x480 display (no stat tiles; counts live in the tab names)."""
 from __future__ import annotations
 
-import sys
-
 from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -671,35 +669,26 @@ class ToolsTab(_Tab):
         self.grid.setSpacing(8)
         self.layout_.addLayout(self.grid)
 
-        # Kiosk mode: open full-screen at boot (switch), and the way to close it on purpose.
+        # Kiosk mode: a switch, on whenever you want it.
         kiosk_card, kb = card()
         kb.addWidget(label("Kiosk mode", "Section"))
-        self.kiosk_box = QCheckBox("Open AureoClean full-screen when the Pi starts, and reopen it if it closes")
+        self.kiosk_box = QCheckBox("Kiosk mode: full screen, can't be closed by accident, locks after a few "
+                                   "minutes without use")
         kb.addWidget(self.kiosk_box)
-        kb.addWidget(label("Takes effect the next time the Pi starts. On the sign-in screen, "
-                           "“Exit kiosk mode…” (admin password needed) turns it off again.", "Muted"))
-        self.quit_btn = button("Close AureoClean now", "Danger", self.quit_kiosk)
-        self.quit_btn.setVisible("--kiosk" in sys.argv)
-        kb.addWidget(self.quit_btn, 0, Qt.AlignLeft)
+        kb.addWidget(label("Turn it off here, or on the sign-in screen with “Exit kiosk mode…” "
+                           "(an admin's password is needed). The app always starts in a normal window.", "Muted"))
         self.layout_.addWidget(kiosk_card)
         self.kiosk_box.toggled.connect(self._set_kiosk)
         self.layout_.addStretch(1)
 
     def _set_kiosk(self, on: bool):
-        from .. import kiosk
-        try:
-            kiosk.enable() if on else kiosk.disable()
-        except OSError as exc:
-            self.message.error(f"Couldn't change kiosk mode: {exc}")
-            return
-        self.message.success("Kiosk mode is on: AureoClean will open full-screen when the Pi starts." if on
-                             else "Kiosk mode is off: open AureoClean from the desktop icon.")
+        self.window().set_kiosk(on)
+        self.message.success("Kiosk mode on." if on else "Kiosk mode off.")
 
-    def quit_kiosk(self):
-        if _confirm(self, "Close AureoClean", "Close the app? It stays closed until the Pi restarts or you "
-                    "open AureoClean from the desktop icon. Alerts and SMS keep running in the background "
-                    "if the AureoClean service is installed."):
-            self.window().quit_app()
+    def kiosk_changed(self, on: bool):
+        self.kiosk_box.blockSignals(True)
+        self.kiosk_box.setChecked(on)
+        self.kiosk_box.blockSignals(False)
 
     def _busy(self, on: bool, text: str = "") -> None:
         for b in (self.detect_btn, self.check_btn, self.testmode_btn, self.send_btn):
@@ -742,10 +731,7 @@ class ToolsTab(_Tab):
 
     def refresh(self):
         self.message.clear()
-        from .. import kiosk
-        self.kiosk_box.blockSignals(True)
-        self.kiosk_box.setChecked(kiosk.is_enabled())
-        self.kiosk_box.blockSignals(False)
+        self.kiosk_changed(bool(getattr(self.window(), "kiosk", False)))
         self.health.refresh()
         run_async(self.api.sim_promo, self._show_promo, self.fail)
         run_async(self.api.sms_settings, self._show_settings, self.fail)
@@ -1011,6 +997,9 @@ class AdminDashboard(QWidget):
             if self._ticks % 4 == 1:  # every 2 minutes: warn on the Tools tab if something's wrong
                 run_async(self.api.system_health, lambda r: self._show_health(r.get("status")), lambda e: None)
 
+    def kiosk_changed(self, on: bool):
+        self.tools.kiosk_changed(on)
+
     def _show_health(self, status):
         self.tabs.setTabText(TAB_TOOLS, {"warn": "Tools ⚠", "fail": "Tools ✗"}.get(status, "Tools"))
 
@@ -1037,7 +1026,9 @@ class AdminDashboard(QWidget):
         self.tabs.blockSignals(False)
         self.refresh_overview()
         self._ticks = 1
-        run_async(self.api.system_health, lambda r: self._show_health(r.get("status")), lambda e: None)
+        # First health check a little after sign-in, once the screen has settled.
+        QTimer.singleShot(8000, lambda: self.nav.api.token and run_async(
+            self.api.system_health, lambda r: self._show_health(r.get("status")), lambda e: None))
         self._poll.start(30_000)
 
     def show_report_charts(self):

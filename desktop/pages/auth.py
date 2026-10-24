@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QFrame, QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 from ..widgets import (
     BusyButton,
@@ -134,9 +134,9 @@ class LoginPage(_FormPage):
         bl.addWidget(label("Administrators", "FieldLabel"))
         bl.addWidget(button("Register with an admin invite code", "Link", lambda: nav.show_page("admin_register")))
         bl.addStretch(1)
-        if nav.kiosk:
-            bl.addWidget(button("Exit kiosk mode…", "Small", lambda: KioskExitDialog(nav, self).exec()),
-                         0, Qt.AlignLeft)
+        self.exit_kiosk_btn = button("Exit kiosk mode…", "Small", lambda: KioskExitDialog(nav, self).exec())
+        self.exit_kiosk_btn.setVisible(False)  # only while kiosk mode is on
+        bl.addWidget(self.exit_kiosk_btn, 0, Qt.AlignLeft)
         bl.addWidget(label("STI College Caloocan", "Muted"))
 
         content = QFrame()
@@ -146,6 +146,9 @@ class LoginPage(_FormPage):
         row.addWidget(brand_panel, 1)
         row.addWidget(self.frame, 1)
         self.outer.addWidget(scroll_page(content, 760))
+
+    def kiosk_changed(self, on: bool):
+        self.exit_kiosk_btn.setVisible(on)
 
     def prefill(self, identifier: str = "", note: str = ""):
         self.reset()
@@ -395,15 +398,11 @@ class KioskExitDialog(QDialog):
         body.setContentsMargins(16, 14, 16, 14)
         body.setSpacing(7)
         body.addWidget(label("Exit kiosk mode", "Section"))
-        body.addWidget(label("An administrator's sign-in is needed. Texts, replies and website reports keep "
-                             "working in the background.", "Muted"))
+        body.addWidget(label("An administrator's sign-in is needed to leave kiosk mode.", "Muted"))
         self.ident = Field("Admin username or email")
         self.password = Field("Password", password=True)
         body.addWidget(self.ident)
         body.addWidget(self.password)
-        self.turn_off = QCheckBox("Also stop opening full-screen when the Pi starts")
-        self.turn_off.setChecked(True)
-        body.addWidget(self.turn_off)
         self.message = Message()
         body.addWidget(self.message)
         row = QHBoxLayout()
@@ -426,15 +425,8 @@ class KioskExitDialog(QDialog):
         self.busy.start()
 
         def ok(_):
-            from .. import kiosk
-            if self.turn_off.isChecked():
-                try:
-                    kiosk.disable()
-                except OSError as exc:
-                    self.message.error(f"Couldn't turn kiosk mode off: {exc}")
-                    return
             self.accept()
-            self.nav.quit_app()
+            self.nav.set_kiosk(False)
 
         def err(e):
             self.password.clear()

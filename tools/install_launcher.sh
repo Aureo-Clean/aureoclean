@@ -69,8 +69,8 @@ echo "Added AureoClean and Update AureoClean to the desktop and the menu (under 
 
 if [ "${1:-}" = "--autostart" ]; then
   mkdir -p "$AUTOSTART_DIR"
-  printf '%s' "$ENTRY" | sed 's/--maximized/--fullscreen/' > "$AUTOSTART_DIR/$NAME"
-  echo "AureoClean will open full-screen when the Pi starts."
+  printf '%s' "$ENTRY" > "$AUTOSTART_DIR/$NAME"
+  echo "AureoClean will open when the Pi starts."
 fi
 
 cat <<EOF
