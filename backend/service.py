@@ -262,6 +262,9 @@ class AureoService:
         self.code_failures = FailureTracker(10, 15)
         from .two_way import TwoWaySms
         self.two_way = TwoWaySms(self)
+        from .health import HealthMonitor
+        self.health = HealthMonitor(self)
+        self.job_status: dict[str, dict] = {}  # background jobs: last run + error (for the health panel)
         # SMS verification codes: at most 3 texts per user per 15 minutes.
         self.sms_sends = FailureTracker(3, 15)
 
@@ -1046,6 +1049,16 @@ class AureoService:
         self.audit("sms_test_sent", admin.actor, None, {"phone": mask_phone(phone)})
         where = "written to logs/sms_outbox.log (test mode)" if self.sms.mode == "log" else f"sent to {phone}"
         return {"message": f"Test SMS {where}."}
+
+    def run_job(self, key: str, fn):
+        """Run a background job and remember how it went (shown in System health)."""
+        try:
+            result = fn()
+            self.job_status[key] = {"at": iso(utcnow()), "error": None}
+            return result
+        except Exception as exc:
+            self.job_status[key] = {"at": iso(utcnow()), "error": f"{type(exc).__name__}: {exc}"}
+            raise
 
     def simulate_sms_reply(self, admin: Session, phone: str, text: str) -> dict:
         """Handle a reply as if it had arrived by SMS (for testing and demos)."""

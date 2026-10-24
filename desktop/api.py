@@ -124,6 +124,10 @@ class ApiClient:
     def test_sms(self, uid):
         return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/test-sms", timeout=SMS_TIMEOUT)
 
+    def system_health(self, check_balance: bool = False):
+        return self._call("GET", "/admin/health", query={"balance": "true" if check_balance else ""},
+                          timeout=SMS_TIMEOUT)
+
     def sms_settings(self):
         return self._call("GET", "/admin/sms/settings")
 

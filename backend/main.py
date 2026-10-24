@@ -296,6 +296,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def update_report(report_id: str, body: ReportUpdateBody, session: Session = Depends(admin)):
         return svc().update_report(session, report_id, body.status, body.note)
 
+    @app.get("/admin/health")
+    def health_report(balance: bool = False, _: Session = Depends(admin)):
+        return svc().health.report(force_balance=balance)
+
     @app.get("/admin/invites")
     def list_invites(_: Session = Depends(admin)):
         return svc().list_invites()
@@ -354,7 +358,7 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
             state["tick"] += 1
             # Replies to alerts (OK 12 / DONE 12): every 20 s. Escalations: every minute.
             try:
-                service.two_way.poll()
+                service.run_job("sms_inbox", service.two_way.poll)
             except Exception:  # noqa: BLE001
                 log.warning("Reading SMS replies failed; will retry", exc_info=True)
             if state["tick"] % 3 == 0:
@@ -362,13 +366,13 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
                     service.two_way.check_escalations()
                 except Exception:  # noqa: BLE001
                     log.warning("Escalation check failed; will retry", exc_info=True)
-            for name, job in (("sign-up", service.import_web_signups), ("report", service.import_public_reports)):
-                try:
-                    n = job()
-                    if n:
-                        log.info("Imported %d website %s(s)", n, name)
-                except Exception:  # noqa: BLE001 - keep trying (e.g. internet down)
-                    log.warning("Website %s import failed; will retry", name, exc_info=True)
+            try:
+                n_signups, n_reports = service.run_job(
+                    "web", lambda: (service.import_web_signups(), service.import_public_reports()))
+                if n_signups or n_reports:
+                    log.info("Imported %d website sign-up(s), %d report(s)", n_signups, n_reports)
+            except Exception:  # noqa: BLE001 - keep trying (e.g. internet down)
+                log.warning("Website import failed; will retry", exc_info=True)
             time.sleep(every)
 
     threading.Thread(target=loop, daemon=True, name="web-signup-import").start()

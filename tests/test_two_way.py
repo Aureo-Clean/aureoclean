@@ -5,7 +5,7 @@ from datetime import timedelta
 from backend.security import iso, utcnow
 from backend.sms import LogSender, ModemSender
 from tests.test_service import Base
-from tests.test_sms import FakeSender, FakeSerial
+from tests.test_sms import FakeSerial
 
 RALPH, MARK = "+639171234567", "+639181234567"
 

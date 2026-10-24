@@ -35,6 +35,7 @@ from ..widgets import (
     status_item,
 )
 from .charts import ReportsDashboard
+from .health import HealthCard
 from .common import LinkButton, SmsCard, TopBar, change_password_button
 
 ACTION_LABELS = {
@@ -535,10 +536,14 @@ class UsersTab(_Tab):
 class ToolsTab(_Tab):
     """SMS (GSM modem) controls, plus shortcuts to Arduino Cloud and Firebase."""
 
-    def __init__(self, api):
+    def __init__(self, api, on_health=None):
         super().__init__(api)
 
-        # ---- SMS card (full width, first)
+        # ---- System health (first, so problems are obvious)
+        self.health = HealthCard(api, on_health)
+        self.layout_.addWidget(self.health.frame)
+
+        # ---- SMS card (full width)
         sms, body = card()
         head = QHBoxLayout()
         head.addWidget(label("SMS (GSM modem)", "Section"))
@@ -605,6 +610,7 @@ class ToolsTab(_Tab):
 
     def refresh(self):
         self.message.clear()
+        self.health.refresh()
         run_async(self.api.sms_settings, self._show_settings, self.fail)
 
         def ok(links):
@@ -822,7 +828,7 @@ class AdminDashboard(QWidget):
         self.users = UsersTab(self.api, self.refresh_overview)
         self.invites = InvitesTab(self.api)
         self.audit = AuditTab(self.api)
-        self.tools = ToolsTab(self.api)
+        self.tools = ToolsTab(self.api, on_health=self._show_health)
 
         # My account: details/password | SMS, side by side.
         account = QWidget()
@@ -863,6 +869,12 @@ class AdminDashboard(QWidget):
             self.refresh_overview()
             if self.tabs.currentIndex() == TAB_REQUESTS:
                 self.requests.refresh()
+            self._ticks = getattr(self, "_ticks", 0) + 1
+            if self._ticks % 4 == 1:  # every 2 minutes: warn on the Tools tab if something's wrong
+                run_async(self.api.system_health, lambda r: self._show_health(r.get("status")), lambda e: None)
+
+    def _show_health(self, status):
+        self.tabs.setTabText(TAB_TOOLS, {"warn": "Tools ⚠", "fail": "Tools ✗"}.get(status, "Tools"))
 
     def _tab_changed(self, index):
         refreshers = {TAB_REQUESTS: self.requests.refresh,
@@ -886,6 +898,8 @@ class AdminDashboard(QWidget):
         self.tabs.setCurrentIndex(TAB_DASHBOARD)
         self.tabs.blockSignals(False)
         self.refresh_overview()
+        self._ticks = 1
+        run_async(self.api.system_health, lambda r: self._show_health(r.get("status")), lambda e: None)
         self._poll.start(30_000)
 
     def show_report_charts(self):

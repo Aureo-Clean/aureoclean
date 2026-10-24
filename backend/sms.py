@@ -238,6 +238,30 @@ class ModemSender:
             finally:
                 ser.close()
 
+    def ussd(self, code: str, timeout: float = 20) -> str:
+        """Dial a USSD code (e.g. a load-balance code) and return the network's answer."""
+        if not re.fullmatch(r"[*#0-9]{2,20}", code or ""):
+            raise SmsError("The balance code should look like *143# (digits, * and # only).")
+        with MODEM_LOCK:
+            ser = self._open()
+            try:
+                self._prepare(ser)
+                ser.reset_input_buffer()
+                ser.write(f'AT+CUSD=1,"{code}",15\r'.encode())
+                reply = self._read_until(ser, ("+CUSD:",), timeout)
+                if "+CUSD:" in reply:  # let the rest of a long answer arrive
+                    reply += self._read_until(ser, ('",',), 3)
+                try:
+                    self._cmd(ser, "AT+CUSD=2", timeout=2)  # close the USSD session
+                except SmsError:
+                    pass
+            finally:
+                ser.close()
+        m = re.search(r'\+CUSD:\s*\d+\s*,\s*"(.*?)"', reply, re.S)
+        if not m:
+            raise SmsError("The network didn't answer the balance code. Check the code and the signal.")
+        return _decode_text(m.group(1).strip())
+
     def read_inbox(self) -> list[Incoming]:
         """Read every text on the SIM, then delete them so the SIM never fills up."""
         with MODEM_LOCK:
