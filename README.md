@@ -248,7 +248,9 @@ a phone to `~/.config/aureoclean/aureoclean.env` as
   tries sign the person out. **Lock** in the top bar locks it right away.
   Change the minutes with `AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never).
 * "Update AureoClean" works as before; kiosk mode reopens the new version.
-* Undo with `./tools/install_kiosk.sh --remove`.
+* To leave kiosk mode from the sign-in screen: **Exit kiosk mode…** (needs an
+  admin's username and password). Turn it back on in Tools → Kiosk mode.
+* Undo everything (also the background service) with `./tools/install_kiosk.sh --remove`.
 
 ## Updating to a new version
 

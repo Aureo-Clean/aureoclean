@@ -45,3 +45,22 @@ class IdleLock(Base):
         with mock.patch.dict(os.environ, {"AUREOCLEAN_IDLE_LOCK_MINUTES": "junk"}):
             self.assertEqual(idle_lock_minutes(), 5)
         self.assertIn("idleLockMinutes", self.svc.login("headadmin", PW)["user"])
+
+
+class KioskExit(Base):
+    def test_only_an_admin_password_works(self):
+        from backend.service import Forbidden
+        self.assertEqual(self.svc.verify_admin("headadmin", PW)["username"], "headadmin")
+        with self.assertRaises(Unauthorized):
+            self.svc.verify_admin("headadmin", "wrong")
+        _, code = self.approved()
+        self.svc.activate_janitor("MarkAgot", code, PW)
+        self.svc.login("MarkAgot", PW)  # a real, working janitor account…
+        with self.assertRaises(Forbidden):  # …still can't take the kiosk out of kiosk mode
+            self.svc.verify_admin("MarkAgot", PW)
+
+    def test_overview_cache_only_when_asked(self):
+        first = self.svc.admin_overview(cached=True)
+        self.request()
+        self.assertEqual(self.svc.admin_overview(cached=True), first)  # reused
+        self.assertEqual(self.svc.admin_overview()["pendingRequests"], first["pendingRequests"] + 1)

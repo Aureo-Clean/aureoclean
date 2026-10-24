@@ -5,6 +5,8 @@ Run with:  python -m backend.main
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, Request
@@ -135,7 +137,12 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
         client = request.client.host if request.client else ""
         if client not in ("127.0.0.1", "::1", "testclient"):
             return JSONResponse({"detail": "Forbidden"}, status_code=403)
-        return await call_next(request)
+        started = time.monotonic()
+        response = await call_next(request)
+        took = time.monotonic() - started
+        if took > 5:  # written to logs/backend.log so slow spots can be found
+            log.warning("Slow request: %s %s took %.1f s", request.method, request.url.path, took)
+        return response
 
     @app.exception_handler(ServiceError)
     async def service_error(_: Request, exc: ServiceError):
@@ -167,7 +174,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def health(recheck: bool = False):
         watch = getattr(app.state, "network", None)
         if watch is not None and recheck:
-            watch.check_now()
+            # Check in the background; wait at most 3 s so the sign-in screen never hangs on it.
+            t = threading.Thread(target=watch.check_now, daemon=True, name="net-recheck")
+            t.start()
+            t.join(3)
         net = watch.status() if watch is not None else {"internet": "unknown", "message": ""}
         return {"ok": True, "mode": svc().settings.mode, **net}
 
@@ -210,6 +220,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
         svc().change_password(session, body.currentPassword, body.newPassword)
         return {"ok": True, "message": "Password changed."}
 
+    @app.post("/auth/verify-admin")
+    def verify_admin(body: LoginBody):
+        return svc().verify_admin(body.identifier, body.password)
+
     @app.post("/auth/lock-pin")
     def lock_pin(body: LockPinBody, session: Session = Depends(any_user)):
         return svc().set_lock_pin(session, body.password, body.pin)
@@ -241,8 +255,8 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     # ------------------------------------------------ admin only
     @app.get("/admin/overview")
-    def admin_overview(_: Session = Depends(admin)):
-        return svc().admin_overview()
+    def admin_overview(cached: bool = False, _: Session = Depends(admin)):
+        return svc().admin_overview(cached)
 
     @app.get("/admin/requests")
     def list_requests(status: Optional[str] = None, _: Session = Depends(admin)):

@@ -13,6 +13,10 @@ BASE_URL = f"http://127.0.0.1:{os.environ.get('AUREOCLEAN_PORT', '8765')}"
 
 # Talking to the GSM modem (finding it, sending a text) can take up to a minute.
 SMS_TIMEOUT = 90
+# Signing in talks to Firebase (password check, profile, session): allow for slow Wi-Fi.
+LOGIN_TIMEOUT = 60
+SLOW_MESSAGE = ("The AureoClean service is taking too long — usually the Pi's internet is slow or "
+                "has dropped. Check the Wi-Fi and try again.")
 
 
 class ApiError(Exception):
@@ -39,39 +43,46 @@ class ApiClient:
         req.add_header("Content-Type", "application/json")
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
-        try:
-            with self._opener.open(req, timeout=timeout) as resp:
-                raw = resp.read()
-                return json.loads(raw) if raw else None
-        except urllib.error.HTTPError as exc:
-            message = f"Request failed ({exc.code})."
+        # Reading something is safe to repeat, so a slow GET is tried once more.
+        attempts = 2 if method == "GET" else 1
+        for attempt in range(1, attempts + 1):
             try:
-                detail = json.loads(exc.read() or b"{}").get("detail")
-                if isinstance(detail, str):
-                    message = detail
-                elif isinstance(detail, list) and detail:  # pydantic validation errors
-                    message = "Please check the form: " + "; ".join(
-                        str(d.get("loc", [""])[-1]) + " " + d.get("msg", "") for d in detail
-                    )
-            except (ValueError, AttributeError):
-                pass
-            raise ApiError(message, exc.code) from exc
-        except urllib.error.URLError as exc:
-            raise ApiError("Cannot reach the AureoClean service. Is the backend running?") from exc
-        except TimeoutError as exc:
-            raise ApiError("The AureoClean service took too long to respond.") from exc
+                with self._opener.open(req, timeout=timeout) as resp:
+                    raw = resp.read()
+                    return json.loads(raw) if raw else None
+            except urllib.error.HTTPError as exc:
+                message = f"Request failed ({exc.code})."
+                try:
+                    detail = json.loads(exc.read() or b"{}").get("detail")
+                    if isinstance(detail, str):
+                        message = detail
+                    elif isinstance(detail, list) and detail:  # pydantic validation errors
+                        message = "Please check the form: " + "; ".join(
+                            str(d.get("loc", [""])[-1]) + " " + d.get("msg", "") for d in detail
+                        )
+                except (ValueError, AttributeError):
+                    pass
+                raise ApiError(message, exc.code) from exc
+            except (TimeoutError, urllib.error.URLError) as exc:
+                timed_out = isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+                if not timed_out:
+                    raise ApiError("Cannot reach the AureoClean service. Is the backend running?") from exc
+                if attempt == attempts:
+                    raise ApiError(SLOW_MESSAGE) from exc
 
     # ---------------------------------------------------------------- public
     def health(self, recheck: bool = False):
-        return self._call("GET", "/health", query={"recheck": "true" if recheck else ""})
+        return self._call("GET", "/health", query={"recheck": "true" if recheck else ""}, timeout=15)
 
     def login(self, identifier: str, password: str) -> dict:
-        result = self._call("POST", "/auth/login", {"identifier": identifier, "password": password})
+        result = self._call("POST", "/auth/login", {"identifier": identifier, "password": password},
+                            timeout=LOGIN_TIMEOUT)
         self.token = result["token"]
         return result
 
     def resend_verification(self, identifier: str, password: str) -> dict:
-        return self._call("POST", "/auth/resend-verification", {"identifier": identifier, "password": password})
+        return self._call("POST", "/auth/resend-verification", {"identifier": identifier, "password": password},
+                          timeout=LOGIN_TIMEOUT)
 
     def logout(self) -> None:
         try:
@@ -124,6 +135,10 @@ class ApiClient:
     def test_sms(self, uid):
         return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/test-sms", timeout=SMS_TIMEOUT)
 
+    def verify_admin(self, identifier: str, password: str):
+        return self._call("POST", "/auth/verify-admin", {"identifier": identifier, "password": password},
+                          timeout=LOGIN_TIMEOUT)
+
     def set_lock_pin(self, password: str, pin: str):
         return self._call("POST", "/auth/lock-pin", {"password": password, "pin": pin})
 
@@ -161,8 +176,8 @@ class ApiClient:
     def sms_status(self):
         return self._call("GET", "/admin/sms/status", timeout=SMS_TIMEOUT)
 
-    def admin_overview(self):
-        return self._call("GET", "/admin/overview")
+    def admin_overview(self, cached: bool = False):
+        return self._call("GET", "/admin/overview", query={"cached": "true" if cached else ""})
 
     def list_requests(self, status: str = ""):
         return self._call("GET", "/admin/requests", query={"status": status})

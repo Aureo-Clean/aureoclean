@@ -6,6 +6,7 @@ import sys
 
 from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -670,11 +671,29 @@ class ToolsTab(_Tab):
         self.grid.setSpacing(8)
         self.layout_.addLayout(self.grid)
 
-        # Kiosk mode only: the one way to close the full-screen app on purpose.
-        self.quit_btn = button("Close AureoClean (leave kiosk mode)", "Danger", self.quit_kiosk)
+        # Kiosk mode: open full-screen at boot (switch), and the way to close it on purpose.
+        kiosk_card, kb = card()
+        kb.addWidget(label("Kiosk mode", "Section"))
+        self.kiosk_box = QCheckBox("Open AureoClean full-screen when the Pi starts, and reopen it if it closes")
+        kb.addWidget(self.kiosk_box)
+        kb.addWidget(label("Takes effect the next time the Pi starts. On the sign-in screen, "
+                           "“Exit kiosk mode…” (admin password needed) turns it off again.", "Muted"))
+        self.quit_btn = button("Close AureoClean now", "Danger", self.quit_kiosk)
         self.quit_btn.setVisible("--kiosk" in sys.argv)
-        self.layout_.addWidget(self.quit_btn, 0, Qt.AlignLeft)
+        kb.addWidget(self.quit_btn, 0, Qt.AlignLeft)
+        self.layout_.addWidget(kiosk_card)
+        self.kiosk_box.toggled.connect(self._set_kiosk)
         self.layout_.addStretch(1)
+
+    def _set_kiosk(self, on: bool):
+        from .. import kiosk
+        try:
+            kiosk.enable() if on else kiosk.disable()
+        except OSError as exc:
+            self.message.error(f"Couldn't change kiosk mode: {exc}")
+            return
+        self.message.success("Kiosk mode is on: AureoClean will open full-screen when the Pi starts." if on
+                             else "Kiosk mode is off: open AureoClean from the desktop icon.")
 
     def quit_kiosk(self):
         if _confirm(self, "Close AureoClean", "Close the app? It stays closed until the Pi restarts or you "
@@ -723,6 +742,10 @@ class ToolsTab(_Tab):
 
     def refresh(self):
         self.message.clear()
+        from .. import kiosk
+        self.kiosk_box.blockSignals(True)
+        self.kiosk_box.setChecked(kiosk.is_enabled())
+        self.kiosk_box.blockSignals(False)
         self.health.refresh()
         run_async(self.api.sim_promo, self._show_promo, self.fail)
         run_async(self.api.sms_settings, self._show_settings, self.fail)
@@ -981,7 +1004,7 @@ class AdminDashboard(QWidget):
 
     def _poll_tick(self):
         if self.isVisible() and self.nav.api.token:
-            self.refresh_overview()
+            self.refresh_overview(cached=True)
             if self.tabs.currentIndex() == TAB_REQUESTS:
                 self.requests.refresh()
             self._ticks = getattr(self, "_ticks", 0) + 1
@@ -1025,7 +1048,7 @@ class AdminDashboard(QWidget):
         self.sms.message.clear()  # don't show an old "test mode" note after switching modes
         run_async(self.api.me, self.sms.load, lambda e: self.nav.handle_session_error(e))
 
-    def refresh_overview(self):
+    def refresh_overview(self, cached: bool = False):
         """Pending count goes in the tab name, e.g. "Requests (2)"."""
 
         def ok(ov):
@@ -1037,4 +1060,8 @@ class AdminDashboard(QWidget):
                 f"{pending} pending · {ov.get('awaitingActivation', 0)} awaiting activation · "
                 f"{ov.get('activeJanitors', 0)} active janitors")
 
-        run_async(self.api.admin_overview, ok, lambda e: self.nav.handle_session_error(e))
+        def err(e):
+            if not self.nav.handle_session_error(e):
+                self.requests.summary.setText(f"⚠ {e.message}")
+
+        run_async(lambda: self.api.admin_overview(cached), ok, err)

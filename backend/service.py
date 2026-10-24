@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -661,6 +662,24 @@ class AureoService:
         if role and session.role != role:
             raise Forbidden("You do not have permission to do that.")
         return session
+
+    def verify_admin(self, identifier: str, password: str) -> dict:
+        """Check an admin's username/email and password without starting a session
+        (used to leave kiosk mode from the sign-in screen)."""
+        ident = (identifier or "").strip()
+        key = f"login:{ident.lower()}"
+        wait = self.login_failures.locked_for(key)
+        if wait:
+            raise TooManyAttempts(f"Too many failed attempts. Try again in {max(1, wait // 60)} minute(s).")
+        if not ident or not password:
+            raise BadRequest("Enter an administrator's username and password.")
+        _, uid = self._check_credentials(ident, password, key)
+        profile = self.store.get(self.C_USERS, uid) or {}
+        if profile.get("role") != ROLE_ADMIN or profile.get("status") != "active":
+            raise Forbidden("Only an administrator can do this.")
+        self.login_failures.reset(key)
+        self.audit("kiosk_exit", {"type": "admin", "uid": uid, "username": profile.get("username")}, uid)
+        return {"ok": True, "username": profile.get("username")}
 
     def me(self, session: Session) -> dict:
         profile = self.store.get(self.C_USERS, session.uid)
@@ -1532,7 +1551,17 @@ class AureoService:
         return out
 
     # ============================================================ dashboards
-    def admin_overview(self) -> dict:
+    def admin_overview(self, cached: bool = False) -> dict:
+        """Counts for the tab names. The screen's 30 s timer passes cached=True, so an
+        answer from the last 15 s is reused instead of re-reading every collection."""
+        hit = getattr(self, "_overview_cache", None)
+        if cached and hit and time.monotonic() - hit[0] < 15:
+            return hit[1]
+        result = self._admin_overview()
+        self._overview_cache = (time.monotonic(), result)
+        return result
+
+    def _admin_overview(self) -> dict:
         requests = self.list_requests()
         users = self.list_users()
         return {

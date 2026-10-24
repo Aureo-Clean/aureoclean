@@ -7,6 +7,7 @@ stay outside the app folder; its path comes from GOOGLE_APPLICATION_CREDENTIALS.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, Optional
 
 import requests
@@ -17,6 +18,23 @@ from .base import AccountDisabled, AccountExists, AlreadyExists, ProviderError
 
 SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
 SEND_OOB_URL = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode"
+
+# Every Firestore call gives up after this long instead of hanging (Google's default
+# can wait a minute or more on a flaky Wi-Fi), so the app gets an answer in time.
+FIRESTORE_TIMEOUT = 8      # one attempt
+FIRESTORE_DEADLINE = 15    # all retries together
+HTTP_TIMEOUT = (5, 10)     # Firebase sign-in: connect, read
+HTTP_IDLE_RESET = 90       # seconds: after this, use a new connection (routers drop idle ones)
+
+
+def _retry():
+    from google.api_core import retry as r
+    try:
+        return r.Retry(initial=0.3, maximum=3.0, multiplier=2.0, timeout=FIRESTORE_DEADLINE,
+                       predicate=r.if_transient_error)
+    except TypeError:  # older google-api-core
+        return r.Retry(initial=0.3, maximum=3.0, multiplier=2.0, deadline=FIRESTORE_DEADLINE,
+                       predicate=r.if_transient_error)
 
 
 def _friendly(exc: Exception) -> ProviderError:
@@ -89,13 +107,15 @@ class FirebaseBackend:
         self._db = firestore.client(app=app)
         self._api_key = web_api_key
         self._http = requests.Session()
+        self._http_used = time.monotonic()
+        self._rt = {"retry": _retry(), "timeout": FIRESTORE_TIMEOUT}
 
     # ------------------------------------------------------------ DocStore
     def _ref(self, collection: str, doc_id: str):
         return self._db.collection(collection).document(doc_id)
 
     def get(self, collection: str, doc_id: str) -> Optional[dict]:
-        snap = self._ref(collection, doc_id).get()
+        snap = self._ref(collection, doc_id).get(**self._rt)
         return snap.to_dict() if snap.exists else None
 
     def create(self, collection: str, doc_id: str, data: dict) -> None:
@@ -103,15 +123,15 @@ class FirebaseBackend:
         from google.api_core.exceptions import Conflict
 
         try:
-            self._ref(collection, doc_id).create(data)
+            self._ref(collection, doc_id).create(data, **self._rt)
         except (GAlreadyExists, Conflict) as exc:
             raise AlreadyExists(f"{collection}/{doc_id}") from exc
 
     def set(self, collection: str, doc_id: str, data: dict) -> None:
-        self._ref(collection, doc_id).set(data)
+        self._ref(collection, doc_id).set(data, **self._rt)
 
     def delete(self, collection: str, doc_id: str) -> None:
-        self._ref(collection, doc_id).delete()
+        self._ref(collection, doc_id).delete(**self._rt)
 
     def query(self, collection: str, **equals) -> list[tuple[str, dict]]:
         from google.cloud.firestore_v1.base_query import FieldFilter
@@ -119,7 +139,7 @@ class FirebaseBackend:
         q = self._db.collection(collection)
         for field, value in equals.items():
             q = q.where(filter=FieldFilter(field, "==", value))
-        return [(snap.id, snap.to_dict()) for snap in q.stream()]
+        return [(snap.id, snap.to_dict()) for snap in q.stream(**self._rt)]
 
     def latest(self, collection: str, field: str, limit: int) -> list[tuple[str, dict]]:
         q = (
@@ -127,14 +147,14 @@ class FirebaseBackend:
             .order_by(field, direction=self._firestore.Query.DESCENDING)
             .limit(limit)
         )
-        return [(snap.id, snap.to_dict()) for snap in q.stream()]
+        return [(snap.id, snap.to_dict()) for snap in q.stream(**self._rt)]
 
     def transact(self, collection: str, doc_id: str, fn: Callable[[Optional[dict]], Optional[dict]]):
         ref = self._ref(collection, doc_id)
 
         @self._firestore.transactional
         def run(transaction):
-            snap = ref.get(transaction=transaction)
+            snap = ref.get(transaction=transaction, **self._rt)
             result = fn(snap.to_dict() if snap.exists else None)
             if result is not None:
                 transaction.set(ref, result)
@@ -158,9 +178,14 @@ class FirebaseBackend:
         A long-idle connection can be dropped by the router; the retry uses a
         fresh connection. The real error is written to logs/backend.log."""
         last = None
+        if time.monotonic() - self._http_used > HTTP_IDLE_RESET:
+            # The router has probably dropped the old connection; reusing it would hang.
+            self._http.close()
+            self._http = requests.Session()
+        self._http_used = time.monotonic()
         for attempt in (1, 2):
             try:
-                return self._http.post(url, params={"key": self._api_key}, json=body, timeout=15)
+                return self._http.post(url, params={"key": self._api_key}, json=body, timeout=HTTP_TIMEOUT)
             except requests.RequestException as exc:
                 last = exc
                 log.warning("Firebase request failed (attempt %d): %s: %s", attempt, type(exc).__name__, exc)
@@ -214,11 +239,11 @@ class FirebaseBackend:
         Firebase Console > Authentication > Templates)."""
         try:
             resp = self._http.post(SIGN_IN_URL, params={"key": self._api_key},
-                                   json={"email": email, "password": password, "returnSecureToken": True}, timeout=15)
+                                   json={"email": email, "password": password, "returnSecureToken": True}, timeout=HTTP_TIMEOUT)
             resp.raise_for_status()
             id_token = resp.json()["idToken"]
             resp = self._http.post(SEND_OOB_URL, params={"key": self._api_key},
-                                   json={"requestType": "VERIFY_EMAIL", "idToken": id_token}, timeout=15)
+                                   json={"requestType": "VERIFY_EMAIL", "idToken": id_token}, timeout=HTTP_TIMEOUT)
         except (requests.RequestException, KeyError, ValueError) as exc:
             raise ProviderError("Couldn't send the verification email. Check the internet connection.") from exc
         if not resp.ok:

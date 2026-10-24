@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 from ..widgets import (
     BusyButton,
@@ -57,12 +57,18 @@ class _FormPage(QWidget):
     def finish_form(self, submit_btn):
         self.body.addWidget(self.message)
         self.body.addWidget(submit_btn)
-        for field in self.findChildren(Field):
-            field.edit.returnPressed.connect(submit_btn.click)
+        # Look inside the form itself: on the sign-in page it isn't attached to the page yet,
+        # so searching the page found no boxes and Enter did nothing.
+        fields = self.frame.findChildren(Field)
+        for i, field in enumerate(fields):
+            nxt = fields[i + 1] if i + 1 < len(fields) else None
+            field.edit.returnPressed.connect(
+                lambda f=field, n=nxt: n.edit.setFocus() if (n is not None and not n.text() and f.text())
+                else submit_btn.click())
 
     def reset(self):
         self.message.clear()
-        for field in self.findChildren(Field):
+        for field in self.frame.findChildren(Field):
             field.clear()
 
     def check_required(self, *fields: Field) -> bool:
@@ -128,6 +134,9 @@ class LoginPage(_FormPage):
         bl.addWidget(label("Administrators", "FieldLabel"))
         bl.addWidget(button("Register with an admin invite code", "Link", lambda: nav.show_page("admin_register")))
         bl.addStretch(1)
+        if nav.kiosk:
+            bl.addWidget(button("Exit kiosk mode…", "Small", lambda: KioskExitDialog(nav, self).exec()),
+                         0, Qt.AlignLeft)
         bl.addWidget(label("STI College Caloocan", "Muted"))
 
         content = QFrame()
@@ -371,3 +380,64 @@ class StatusPage(_FormPage):
             (self.message.error if result["status"] == "rejected" else self.message.info)(text)
 
         run_async(lambda: self.api.request_status(username, email), ok, lambda e: self.message.error(e.message), self.busy.stop)
+
+
+class KioskExitDialog(QDialog):
+    """Leave kiosk mode from the sign-in screen. Needs an administrator's password,
+    so someone passing by the screen can't close it."""
+
+    def __init__(self, nav, parent):
+        super().__init__(parent)
+        self.nav = nav
+        self.setWindowTitle("Exit kiosk mode")
+        self.setModal(True)
+        body = QVBoxLayout(self)
+        body.setContentsMargins(16, 14, 16, 14)
+        body.setSpacing(7)
+        body.addWidget(label("Exit kiosk mode", "Section"))
+        body.addWidget(label("An administrator's sign-in is needed. Texts, replies and website reports keep "
+                             "working in the background.", "Muted"))
+        self.ident = Field("Admin username or email")
+        self.password = Field("Password", password=True)
+        body.addWidget(self.ident)
+        body.addWidget(self.password)
+        self.turn_off = QCheckBox("Also stop opening full-screen when the Pi starts")
+        self.turn_off.setChecked(True)
+        body.addWidget(self.turn_off)
+        self.message = Message()
+        body.addWidget(self.message)
+        row = QHBoxLayout()
+        row.addWidget(button("Cancel", on_click=self.reject))
+        row.addStretch(1)
+        self.go = button("Exit kiosk mode", "Primary", self.confirm)
+        self.busy = BusyButton(self.go, "Checking…")
+        row.addWidget(self.go)
+        body.addLayout(row)
+        self.ident.edit.returnPressed.connect(self.password.edit.setFocus)
+        self.password.edit.returnPressed.connect(self.go.click)
+        self.setMinimumWidth(min(380, parent.window().width() - 20))
+
+    def confirm(self):
+        self.message.clear()
+        ident, pw = self.ident.value(), self.password.text()
+        if not ident or not pw:
+            self.message.error("Enter an administrator's username and password.")
+            return
+        self.busy.start()
+
+        def ok(_):
+            from .. import kiosk
+            if self.turn_off.isChecked():
+                try:
+                    kiosk.disable()
+                except OSError as exc:
+                    self.message.error(f"Couldn't turn kiosk mode off: {exc}")
+                    return
+            self.accept()
+            self.nav.quit_app()
+
+        def err(e):
+            self.password.clear()
+            self.message.error(e.message)
+
+        run_async(lambda: self.nav.api.verify_admin(ident, pw), ok, err, self.busy.stop)
