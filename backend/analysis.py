@@ -24,9 +24,9 @@ from typing import Callable, Optional
 from .report_schema import issue_map, schema
 
 RECORD_FIELDS = (
-    "id", "createdAt", "weekday", "hour", "source", "channel", "category", "priority", "status",
-    "location", "locationCode", "issues", "urgency", "rating", "details", "resolvedAt",
-    "minutesToResolve", "notes",
+    "id", "ref", "createdAt", "weekday", "hour", "source", "channel", "category", "priority", "status",
+    "location", "locationCode", "issues", "urgency", "rating", "details", "acceptedAt", "minutesToAccept",
+    "takenBy", "resolvedAt", "minutesToResolve", "escalated", "notes",
 )
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 LOCAL_TZ = timezone(timedelta(hours=8))  # Philippines (UTC+8): hours of day as staff see them
@@ -42,9 +42,11 @@ def _parse(ts: Optional[str]) -> Optional[datetime]:
 def to_record(report_id: str, r: dict) -> dict:
     created = _parse(r.get("reportedAt") or r.get("createdAt"))
     resolved = _parse(r.get("resolvedAt"))
+    accepted = _parse(r.get("acceptedAt"))
     local = created.astimezone(LOCAL_TZ) if created else None
     return {
         "id": report_id,
+        "ref": r.get("smsRef"),
         "createdAt": created.isoformat() if created else None,
         "weekday": WEEKDAYS[local.weekday()] if local else None,
         "hour": local.hour if local else None,
@@ -59,8 +61,12 @@ def to_record(report_id: str, r: dict) -> dict:
         "urgency": r.get("urgency"),
         "rating": r.get("rating"),
         "details": (r.get("details") or "")[:300] or None,
+        "acceptedAt": accepted.isoformat() if accepted else None,
+        "minutesToAccept": round((accepted - created).total_seconds() / 60) if created and accepted else None,
+        "takenBy": (r.get("resolvedBy") or r.get("assignedTo") or {}).get("name"),
         "resolvedAt": resolved.isoformat() if resolved else None,
         "minutesToResolve": round((resolved - created).total_seconds() / 60) if created and resolved else None,
+        "escalated": bool(r.get("escalatedAt")),
         "notes": [n.get("text", "")[:120] for n in (r.get("notes") or []) if n.get("by") != "sms"][-5:],
     }
 
@@ -71,6 +77,18 @@ def dataset(service, days: int = 30) -> list[dict]:
     records = [x for x in records if (x["createdAt"] or "") >= since]
     records.sort(key=lambda x: x["createdAt"] or "")
     return records
+
+
+def _median(values) -> Optional[int]:
+    values = [v for v in values if v is not None]
+    return round(statistics.median(values)) if values else None
+
+
+def _group(records: list[dict], key: str) -> dict:
+    out = defaultdict(list)
+    for rec in records:
+        out[rec.get(key)].append(rec)
+    return out
 
 
 def summarize(records: list[dict]) -> dict:
@@ -101,6 +119,13 @@ def summarize(records: list[dict]) -> dict:
             loc: round(statistics.mean(r["rating"] for r in rs if r["rating"]), 2)
             for loc, rs in by_location.items() if any(r["rating"] for r in rs)},
         "medianMinutesToResolveByCategory": {cat: round(statistics.median(v)) for cat, v in resolve.items()},
+        "medianMinutesToResolve": _median([x["minutesToResolve"] for x in records]),
+        "medianMinutesToAccept": _median([x["minutesToAccept"] for x in records]),
+        "averageCleanliness": (round(statistics.mean(x["rating"] for x in records if x["rating"]), 2)
+                               if any(x["rating"] for x in records) else None),
+        "unanswered": sum(x["escalated"] and not x["acceptedAt"] for x in records),
+        "byJanitor": {name: {"handled": len(rs), "medianMinutesToResolve": _median([r["minutesToResolve"] for r in rs])}
+                      for name, rs in _group(records, "takenBy").items() if name},
         "recurringProblems": [
             {"location": loc, "issue": labels.get(code, code), "count": n}
             for (loc, code), n in pairs.most_common(10) if n >= 2],

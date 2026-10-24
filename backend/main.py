@@ -277,6 +277,12 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def sms_test_to(body: PhoneBody, session: Session = Depends(admin)):
         return svc().send_test_sms_to(session, body.phone)
 
+    @app.get("/admin/reports/summary")
+    def reports_summary(days: int = 30, _: Session = Depends(admin)):
+        from .analysis import dataset, summarize
+        records = dataset(svc(), max(1, min(days, 365)))
+        return {"days": days, "summary": summarize(records), "records": records}
+
     @app.get("/admin/reports")
     def list_reports(status: str = "", category: str = "", _: Session = Depends(admin)):
         return svc().list_reports(status, category)

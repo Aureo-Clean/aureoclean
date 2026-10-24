@@ -68,6 +68,13 @@ class TwoWay(Base):
         self.assertIn("marked done", self.svc.sms.to(RALPH)[-1])
         self.assertIn("Accepted by Ralph via SMS", [n["text"] for n in r["notes"]])
 
+        # The dashboard numbers pick up who did it and how fast.
+        from backend.analysis import dataset, summarize
+        s = summarize(dataset(self.svc))
+        self.assertEqual(s["medianMinutesToAccept"], 0)
+        self.assertEqual(s["medianMinutesToResolve"], 0)
+        self.assertEqual(s["byJanitor"]["Ralph"]["handled"], 1)
+
     def test_done_without_accept_and_repeat(self):
         self.reply(MARK, "DONE 1")
         self.assertEqual(self.current()["status"], "resolved")

@@ -163,6 +163,9 @@ class ApiClient:
     def set_user_active(self, uid, active: bool):
         return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/status", {"active": active})
 
+    def reports_summary(self, days: int = 30):
+        return self._call("GET", "/admin/reports/summary", query={"days": days})
+
     def list_reports(self, status: str = "", category: str = ""):
         return self._call("GET", "/admin/reports", query={"status": status, "category": category})
 

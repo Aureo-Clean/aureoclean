@@ -238,4 +238,4 @@ class Analysis(Base):
             self.assertEqual(out["count"], 3)
             lines = out["paths"]["reports"].read_text().splitlines()
             self.assertEqual(len(lines), 3)
-            self.assertTrue(out["paths"]["reports_csv"].read_text().startswith("id,createdAt"))
+            self.assertTrue(out["paths"]["reports_csv"].read_text().startswith("id,ref,createdAt"))

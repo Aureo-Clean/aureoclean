@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -33,6 +34,7 @@ from ..widgets import (
     selected_object,
     status_item,
 )
+from .charts import ReportsDashboard
 from .common import LinkButton, SmsCard, TopBar, change_password_button
 
 ACTION_LABELS = {
@@ -297,10 +299,12 @@ class ReportsTab(_Tab):
 
     SHOW = [("Open & in progress", "active"), ("Resolved", "resolved"), ("All", "")]
 
-    def __init__(self, api, on_change):
+    def __init__(self, api, on_change, on_charts=None):
         super().__init__(api)
         self.on_change = on_change
         bar = QHBoxLayout()
+        if on_charts:
+            bar.addWidget(button("📊 Charts", "Small", on_charts))
         self.show_filter = QComboBox()
         for text, value in self.SHOW:
             self.show_filter.addItem(text, value)
@@ -809,7 +813,12 @@ class AdminDashboard(QWidget):
         dl = QVBoxLayout(self.dash_tab)
         dl.setContentsMargins(0, 0, 0, 0)
         self.requests = RequestsTab(self.api, self.refresh_overview)
-        self.reports = ReportsTab(self.api, self.refresh_overview)
+        # Reports: the list, and a charts dashboard behind the "📊 Charts" button.
+        self.reports_stack = QStackedWidget()
+        self.reports = ReportsTab(self.api, self.refresh_overview, on_charts=self.show_report_charts)
+        self.report_charts = ReportsDashboard(self.api, on_back=lambda: self.reports_stack.setCurrentIndex(0))
+        self.reports_stack.addWidget(self.reports)
+        self.reports_stack.addWidget(scroll_page(self.report_charts))
         self.users = UsersTab(self.api, self.refresh_overview)
         self.invites = InvitesTab(self.api)
         self.audit = AuditTab(self.api)
@@ -836,7 +845,7 @@ class AdminDashboard(QWidget):
 
         self.tabs.addTab(self.dash_tab, "Dashboard")
         self.tabs.addTab(self.requests, "Requests")
-        self.tabs.addTab(self.reports, "Reports")
+        self.tabs.addTab(self.reports_stack, "Reports")
         self.tabs.addTab(self.users, "Users")
         self.tabs.addTab(scroll_page(self.invites), "Invites")
         self.tabs.addTab(self.audit, "Audit")
@@ -856,7 +865,9 @@ class AdminDashboard(QWidget):
                 self.requests.refresh()
 
     def _tab_changed(self, index):
-        refreshers = {TAB_REQUESTS: self.requests.refresh, TAB_REPORTS: self.reports.refresh,
+        refreshers = {TAB_REQUESTS: self.requests.refresh,
+                      TAB_REPORTS: lambda: (self.report_charts.refresh() if self.reports_stack.currentIndex()
+                                            else self.reports.refresh()),
                       TAB_USERS: self.users.refresh,
                       TAB_INVITES: self.invites.refresh, TAB_AUDIT: self.audit.refresh,
                       TAB_TOOLS: self.tools.refresh, TAB_ACCOUNT: self.load_account}
@@ -876,6 +887,10 @@ class AdminDashboard(QWidget):
         self.tabs.blockSignals(False)
         self.refresh_overview()
         self._poll.start(30_000)
+
+    def show_report_charts(self):
+        self.reports_stack.setCurrentIndex(1)
+        self.report_charts.refresh()
 
     def load_account(self):
         self.sms.message.clear()  # don't show an old "test mode" note after switching modes
