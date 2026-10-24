@@ -130,6 +130,15 @@ class ApiClient:
     def unlock(self, secret: str):
         return self._call("POST", "/auth/unlock", {"secret": secret})
 
+    def sim_promo(self):
+        return self._call("GET", "/admin/sms/promo")
+
+    def set_sim_promo(self, name: str, days: int, registered: str = ""):
+        return self._call("POST", "/admin/sms/promo", {"name": name, "days": days, "registered": registered})
+
+    def clear_sim_promo(self):
+        return self._call("POST", "/admin/sms/promo/clear", {})
+
     def system_health(self, check_balance: bool = False):
         return self._call("GET", "/admin/health", query={"balance": "true" if check_balance else ""},
                           timeout=SMS_TIMEOUT)

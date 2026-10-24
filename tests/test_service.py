@@ -3,6 +3,7 @@
 Run from the project folder:  python3 -m unittest discover -s tests -v
 """
 import dataclasses
+from pathlib import Path
 import unittest
 
 from backend.config import load_settings
@@ -21,6 +22,9 @@ PW = "CleanPass123"
 
 
 def make_service(**overrides) -> AureoService:
+    # Never touch the real ~/.config/aureoclean (SMS settings, SIM promo) from tests.
+    import tempfile
+    overrides.setdefault("sms_settings_file", Path(tempfile.mkdtemp(prefix="aureo-test-")) / "sms.json")
     settings = dataclasses.replace(load_settings(), mode="local", **overrides)
     backend = LocalBackend(":memory:")
     return AureoService(settings, backend, backend)

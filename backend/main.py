@@ -64,6 +64,12 @@ class UnlockBody(BaseModel):
     secret: str = Field(default="", max_length=200)
 
 
+class SimPromoBody(BaseModel):
+    name: str = Field(default="", max_length=60)
+    days: int = Field(default=15, ge=1, le=400)
+    registered: str = Field(default="", max_length=10)
+
+
 class RejectBody(BaseModel):
     reason: str = Field(default="", max_length=200)
 
@@ -313,6 +319,18 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def update_report(report_id: str, body: ReportUpdateBody, session: Session = Depends(admin)):
         return svc().update_report(session, report_id, body.status, body.note)
 
+    @app.get("/admin/sms/promo")
+    def sim_promo(_: Session = Depends(admin)):
+        return svc().get_sim_promo()
+
+    @app.post("/admin/sms/promo")
+    def set_sim_promo(body: SimPromoBody, session: Session = Depends(admin)):
+        return svc().set_sim_promo(session, body.name, body.days, body.registered)
+
+    @app.post("/admin/sms/promo/clear")
+    def clear_sim_promo(session: Session = Depends(admin)):
+        return svc().clear_sim_promo(session)
+
     @app.get("/admin/health")
     def health_report(balance: bool = False, _: Session = Depends(admin)):
         return svc().health.report(force_balance=balance)
@@ -383,6 +401,10 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
                     service.two_way.check_escalations()
                 except Exception:  # noqa: BLE001
                     log.warning("Escalation check failed; will retry", exc_info=True)
+                try:
+                    service.promo_reminder()
+                except Exception:  # noqa: BLE001
+                    log.warning("SIM promo reminder failed; will retry", exc_info=True)
             try:
                 n_signups, n_reports = service.run_job(
                     "web", lambda: (service.import_web_signups(), service.import_public_reports()))

@@ -23,7 +23,7 @@ import re
 import secrets
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from .config import Settings
@@ -62,13 +62,17 @@ from .sms import (
     LogSender,
     ModemSender,
     SavedSmsSettings,
+    SendTracker,
+    SimPromo,
     SmsError,
     SmsSender,
+    TrackedSender,
     detect_modem,
     mask_phone,
     normalize_phone,
 )
 
+PH_TZ = timezone(timedelta(hours=8))  # promo dates are counted in Philippine time
 ROLE_ADMIN = "admin"
 ROLE_JANITOR = "janitor"
 
@@ -250,9 +254,20 @@ def _expired(value: Optional[str]) -> bool:
 
 
 class AureoService:
+    # Every sender is wrapped so System health can show whether texts are going out.
+    @property
+    def sms(self):
+        return self._sms
+
+    @sms.setter
+    def sms(self, sender):
+        self._sms = sender if isinstance(sender, TrackedSender) else TrackedSender(sender, self.send_tracker)
+
     def __init__(self, settings: Settings, store: DocStore, identity: Identity, sms: Optional[SmsSender] = None):
         self.settings = settings
+        self.send_tracker = SendTracker()
         self.sms = sms or LogSender(settings.log_dir / "sms_outbox.log")
+        self.sim_promo = SimPromo(settings.sms_settings_file.with_name("sim_promo.json"))
         self.store = store
         self.identity = identity
         prefix = settings.collection_prefix
@@ -1071,6 +1086,64 @@ class AureoService:
         baud = getattr(self.sms, "baud", 0)
         label = f"GSM modem on {port} @ {baud} baud" if self.sms.mode == "modem" else "Test mode (texts are not sent)"
         return {"mode": self.sms.mode, "port": port, "baud": baud, "label": label}
+
+    # ---------------------------------------------------------------- SIM promo
+    def get_sim_promo(self) -> dict:
+        promo = self.sim_promo.load()
+        if not promo.get("expires"):
+            return {"set": False}
+        try:
+            ends = date.fromisoformat(promo["expires"])
+        except ValueError:
+            return {"set": False}
+        days_left = (ends - datetime.now(PH_TZ).date()).days
+        return {"set": True, "name": promo.get("name") or "Promo", "expires": ends.isoformat(),
+                "daysLeft": days_left, "registered": promo.get("registered")}
+
+    def set_sim_promo(self, admin: Session, name: str, days: int, registered: str = "") -> dict:
+        """Save the promo: it ends ``days`` days after ``registered`` (default today)."""
+        name = (name or "").strip()[:60] or "Promo"
+        try:
+            days = int(days)
+            start = date.fromisoformat(registered) if registered else datetime.now(PH_TZ).date()
+        except (TypeError, ValueError):
+            raise BadRequest("Check the promo days and start date.")
+        if not 1 <= days <= 400:
+            raise BadRequest("The promo should last 1 to 400 days.")
+        ends = start + timedelta(days=days)
+        self.sim_promo.save({"name": name, "registered": start.isoformat(), "days": days,
+                             "expires": ends.isoformat(), "setBy": admin.username, "setAt": iso(utcnow())})
+        self.audit("sim_promo_set", admin.actor, None, {"name": name, "expires": ends.isoformat()})
+        return self.get_sim_promo()
+
+    def clear_sim_promo(self, admin: Session) -> dict:
+        self.sim_promo.save({})
+        self.audit("sim_promo_cleared", admin.actor, None)
+        return {"set": False}
+
+    def promo_reminder(self) -> bool:
+        """Text the admins once when the promo has 1 day left (and once when it has ended)."""
+        promo = self.get_sim_promo()
+        if not promo["set"] or promo["daysLeft"] > 1 or self.sms.mode != "modem":
+            return False
+        days = promo["daysLeft"]
+        stage = "ended" if days < 0 else "ending"
+        saved = self.sim_promo.load()
+        if saved.get("remindedFor") == f"{promo['expires']}:{stage}":
+            return False
+        when = "has ended" if days < 0 else "ends today" if days == 0 else "ends tomorrow"
+        text = (f"AureoClean: the SIM promo ({promo['name']}) {when}. Register again so alerts keep going out, "
+                "then update it in Tools > SMS.")
+        sent = 0
+        for admin in self.sms_recipients(ROLE_ADMIN):
+            try:
+                self.sms.send(admin["phone"], text[:160])
+                sent += 1
+            except SmsError:
+                pass
+        saved["remindedFor"] = f"{promo['expires']}:{stage}"
+        self.sim_promo.save(saved)
+        return sent > 0
 
     def use_detected_modem(self, admin: Session, detector=None) -> dict:
         """Find the modem on the serial ports and switch SMS to it right away."""

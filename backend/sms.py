@@ -373,3 +373,65 @@ def build_sender(mode: str, port: str, baud: int, outbox: Path) -> SmsSender:
     if mode == "modem":
         return ModemSender(port, baud)
     return LogSender(outbox)
+
+
+# ---------------------------------------------------------------- send tracking
+class SendTracker:
+    """Remembers how the last texts went, for the System health panel.
+    (A promo that ran out, or one that doesn't cover the other network, shows up here.)"""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_ok_at: str | None = None
+        self.last_error: str | None = None
+        self.last_error_at: str | None = None
+        self.failures_in_a_row = 0
+
+    def ok(self):
+        from .security import iso, utcnow
+        with self.lock:
+            self.last_ok_at, self.failures_in_a_row = iso(utcnow()), 0
+
+    def fail(self, to: str, error: str):
+        from .security import iso, utcnow
+        with self.lock:
+            self.last_error, self.last_error_at = f"to {to}: {error}", iso(utcnow())
+            self.failures_in_a_row += 1
+
+
+class TrackedSender:
+    """Wraps any sender; everything except send() passes straight through."""
+
+    def __init__(self, inner, tracker: SendTracker):
+        self.inner, self.tracker = inner, tracker
+
+    def send(self, to: str, text: str) -> None:
+        try:
+            self.inner.send(to, text)
+        except SmsError as exc:
+            self.tracker.fail(to, str(exc))
+            raise
+        self.tracker.ok()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+# ---------------------------------------------------------------- SIM promo
+class SimPromo:
+    """The SIM's promo (e.g. unli texts for 15 days), entered in Tools so the app
+    can warn before it runs out. Kept in ~/.config/aureoclean/sim_promo.json."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(data, indent=2))

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QGridLayout,
     QHBoxLayout,
@@ -534,6 +535,71 @@ class UsersTab(_Tab):
 
 
 # ====================================================================== tools
+class PromoDialog(QDialog):
+    """Enter the SIM's promo: name, how many days, and the day it was registered."""
+
+    def __init__(self, parent, current: dict):
+        super().__init__(parent)
+        self.cleared = False
+        self.setWindowTitle("SIM promo")
+        self.setModal(True)
+        body = QVBoxLayout(self)
+        body.setContentsMargins(16, 14, 16, 14)
+        body.setSpacing(7)
+        body.addWidget(label("SIM promo", "Section"))
+        body.addWidget(label("Enter the promo on the modem's SIM (e.g. Globe unli calls & texts for 15 days). "
+                             "AureoClean warns in System health and texts the admins the day before it ends.",
+                             "Muted"))
+        self.name = Field("Promo name", "Globe unli calls & texts")
+        self.name.edit.setMaxLength(60)
+        self.name.edit.setText(current.get("name", "") if current.get("set") else "")
+        body.addWidget(self.name)
+        row = QHBoxLayout()
+        days_box = QVBoxLayout()
+        days_box.addWidget(label("Lasts (days)", "FieldLabel"))
+        self.days = QSpinBox()
+        self.days.setRange(1, 400)
+        self.days.setValue(15)
+        days_box.addWidget(self.days)
+        start_box = QVBoxLayout()
+        start_box.addWidget(label("Registered on", "FieldLabel"))
+        self.start = QDateEdit(QDate.currentDate())
+        self.start.setCalendarPopup(True)
+        self.start.setDisplayFormat("MMM d, yyyy")
+        if current.get("set") and current.get("registered"):
+            self.start.setDate(QDate.fromString(current["registered"], "yyyy-MM-dd"))
+            reg = QDate.fromString(current["registered"], "yyyy-MM-dd")
+            self.days.setValue(max(1, reg.daysTo(QDate.fromString(current["expires"], "yyyy-MM-dd"))))
+        start_box.addWidget(self.start)
+        row.addLayout(days_box, 1)
+        row.addLayout(start_box, 2)
+        body.addLayout(row)
+        self.ends = label("", "Muted")
+        body.addWidget(self.ends)
+        self.days.valueChanged.connect(self._update_end)
+        self.start.dateChanged.connect(self._update_end)
+        self._update_end()
+        buttons = QHBoxLayout()
+        buttons.addWidget(button("Cancel", on_click=self.reject))
+        if current.get("set"):
+            buttons.addWidget(button("Remove", "Danger", self._clear))
+        buttons.addStretch(1)
+        buttons.addWidget(button("Save", "Primary", self.accept))
+        body.addLayout(buttons)
+        self.setMinimumWidth(min(400, parent.window().width() - 20))
+
+    def _update_end(self):
+        end = self.start.date().addDays(self.days.value())
+        self.ends.setText(f"Ends on {end.toString('ddd MMM d, yyyy')}.")
+
+    def _clear(self):
+        self.cleared = True
+        self.accept()
+
+    def values(self):
+        return (self.name.value() or "Promo", self.days.value(), self.start.date().toString("yyyy-MM-dd"))
+
+
 class ToolsTab(_Tab):
     """SMS (GSM modem) controls, plus shortcuts to Arduino Cloud and Firebase."""
 
@@ -565,6 +631,14 @@ class ToolsTab(_Tab):
         body.addLayout(row)
         self.sms_state = label("", "Muted")
         body.addWidget(self.sms_state)
+
+        # The SIM's promo (e.g. unli texts for 15 days): warned before it ends.
+        promo_row = QHBoxLayout()
+        promo_row.setSpacing(6)
+        self.promo_label = label("SIM promo: not set", "Muted")
+        promo_row.addWidget(self.promo_label, 1)
+        promo_row.addWidget(button("Set promo…", "Small", self.edit_promo))
+        body.addLayout(promo_row)
 
         send_row = QHBoxLayout()
         send_row.setSpacing(6)
@@ -620,9 +694,37 @@ class ToolsTab(_Tab):
         self.testmode_btn.setVisible(on_modem)
         self.detect_btn.setText("Find modem again" if on_modem else "Find & use modem")
 
+    def _show_promo(self, p: dict) -> None:
+        self.promo = p
+        if not p.get("set"):
+            self.promo_label.setText("SIM promo: not set. Enter it to be warned (and texted) before it ends.")
+            return
+        d = p["daysLeft"]
+        when = (f"ended {-d} day(s) ago" if d < 0 else "ends today" if d == 0 else
+                "ends tomorrow" if d == 1 else f"{d} days left")
+        mark = "✗" if d < 0 else "⚠" if d <= 2 else "●"
+        self.promo_label.setText(f"{mark} SIM promo: {p['name']} · {when} (ends {p['expires']})")
+
+    def edit_promo(self):
+        dlg = PromoDialog(self, getattr(self, "promo", {}) or {})
+        if dlg.exec() != QDialog.Accepted:
+            return
+        if dlg.cleared:
+            run_async(self.api.clear_sim_promo, self._after_promo, self.fail)
+        else:
+            name, days, start = dlg.values()
+            run_async(lambda: self.api.set_sim_promo(name, days, start), self._after_promo, self.fail)
+
+    def _after_promo(self, p):
+        self._show_promo(p)
+        self.message.success("SIM promo saved. You'll get a text the day before it ends."
+                             if p.get("set") else "SIM promo removed.")
+        self.health.refresh()
+
     def refresh(self):
         self.message.clear()
         self.health.refresh()
+        run_async(self.api.sim_promo, self._show_promo, self.fail)
         run_async(self.api.sms_settings, self._show_settings, self.fail)
 
         def ok(links):

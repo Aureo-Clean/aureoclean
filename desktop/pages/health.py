@@ -21,7 +21,8 @@ class HealthCard:
         head.addWidget(self.summary)
         head.addStretch(1)
         self.refresh_btn = button("Refresh", "Small", lambda: self.refresh())
-        self.balance_btn = button("Check load", "Small", lambda: self.refresh(check_balance=True))
+        self.balance_btn = button("Check balance", "Small", lambda: self.refresh(check_balance=True))
+        self.balance_btn.setVisible(False)  # only once a balance code is set up
         head.addWidget(self.refresh_btn)
         head.addWidget(self.balance_btn)
         body.addLayout(head)
@@ -48,6 +49,7 @@ class HealthCard:
             self.grid.addWidget(dot, row, 0)
             self.grid.addWidget(label(c["name"], "FieldLabel", wrap=False), row, 1)
             self.grid.addWidget(label(c["detail"], "Muted"), row, 2)
+        self.balance_btn.setVisible(any(c["key"] == "balance" for c in report.get("checks", [])))
         status = report.get("status", "ok")
         self.summary.setText(SUMMARY.get(status, ""))
         self.summary.setStyleSheet(f"color:{COLORS.get(status, MUTED)}; font-weight:600;")
@@ -57,7 +59,7 @@ class HealthCard:
 
     def refresh(self, check_balance: bool = False):
         self._busy(True)
-        self.note.setText("Checking the SIM load with your network… (up to 20 s)" if check_balance else "Checking…")
+        self.note.setText("Asking the network for the SIM balance… (up to 20 s)" if check_balance else "Checking…")
 
         def err(e):
             self.note.setText(f"Couldn't check: {e.message}")

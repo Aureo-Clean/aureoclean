@@ -92,7 +92,7 @@ class Switching(unittest.TestCase):
         result = self.svc.use_detected_modem(
             self.admin, detector=lambda: {"port": "/dev/serial0", "baud": 9600, "model": "SIM900"})
         self.assertEqual((result["mode"], result["port"], result["baud"]), ("modem", "/dev/serial0", 9600))
-        self.assertIsInstance(self.svc.sms, ModemSender)
+        self.assertIsInstance(self.svc.sms.inner, ModemSender)
 
         restarted = build_service(self.settings)  # e.g. after a reboot
         self.addCleanup(restarted.store.close)
@@ -100,7 +100,7 @@ class Switching(unittest.TestCase):
         self.assertEqual(restarted.sms.baud, 9600)
 
         self.svc.use_test_mode(self.admin)
-        self.assertIsInstance(self.svc.sms, LogSender)
+        self.assertIsInstance(self.svc.sms.inner, LogSender)
         again = build_service(self.settings)
         self.addCleanup(again.store.close)
         self.assertEqual(again.sms_settings()["mode"], "log")

@@ -76,24 +76,51 @@ class HealthMonitor:
     def balance(self, force: bool = False):
         sms = self.svc.sms
         if sms.mode != "modem":
-            return _check("balance", "SIM load", "off", "Only checked when the GSM modem is on.")
+            return _check("balance", "SIM balance", "off", "Only checked when the GSM modem is on.")
         if not self.balance_code:
-            return _check("balance", "SIM load", "off",
-                          "Not set up: add AUREOCLEAN_SIM_BALANCE_USSD=<your network's balance code> "
-                          "to the config file (the code you'd dial on a phone to see your load).")
+            return _check("balance", "SIM balance", "off", "Not set up (optional).")
 
         def probe():
             try:
                 text = sms.ussd(self.balance_code)
             except SmsError as exc:
-                return _check("balance", "SIM load", "warn", f"Couldn't check: {exc}")
+                return _check("balance", "SIM balance", "warn", f"Couldn't check: {exc}")
             amount = _peso_amount(text)
             status = "warn" if amount is not None and amount < self.low_balance else "ok"
             prefix = f"Low load! ₱{amount:g}. " if status == "warn" else (f"₱{amount:g}. " if amount is not None else "")
-            return _check("balance", "SIM load", status, (prefix + text)[:200])
+            return _check("balance", "SIM balance", status, (prefix + text)[:200])
         if force:
             self._cache.pop("balance", None)
         return self._cached("balance", 3600, probe)
+
+    def promo(self):
+        p = self.svc.get_sim_promo()
+        if not p["set"]:
+            return _check("promo", "SIM promo", "off",
+                          "Not set. If the SIM is on a promo (e.g. unli texts), enter it in Tools → SMS → Set promo "
+                          "so you're warned before it ends.")
+        days, ends = p["daysLeft"], _nice_date(p["expires"])
+        if days < 0:
+            return _check("promo", "SIM promo", "fail",
+                          f"{p['name']} ended on {ends}. Texts may stop going out: register again, then update it here.")
+        if days <= 2:
+            left = "today" if days == 0 else "tomorrow" if days == 1 else f"in {days} days"
+            return _check("promo", "SIM promo", "warn", f"{p['name']} ends {left} ({ends}). Register again soon.")
+        return _check("promo", "SIM promo", "ok", f"{p['name']}: {days} days left (ends {ends})")
+
+    def sending(self):
+        t = self.svc.send_tracker
+        if t.failures_in_a_row:
+            hint = (" The promo may have run out, or may not cover that network (e.g. a Globe promo "
+                    "texting a Smart/TNT number).")
+            status = "fail" if t.failures_in_a_row >= 2 else "warn"
+            return _check("sending", "Sending texts", status,
+                          f"Last {t.failures_in_a_row} text(s) failed — {t.last_error[:120]}.{hint}")
+        if t.last_ok_at:
+            age = (utcnow() - parse_iso(t.last_ok_at)).total_seconds()
+            ago = f"{int(age // 60)} min ago" if age < 3600 else f"{int(age // 3600)} h ago"
+            return _check("sending", "Sending texts", "ok", f"Last text went out {ago}.")
+        return _check("sending", "Sending texts", "off", "No texts sent since the service started.")
 
     def jobs(self):
         out = []
@@ -131,7 +158,11 @@ class HealthMonitor:
 
     # ------------------------------------------------------------------ all
     def report(self, force_balance: bool = False) -> dict:
-        checks = [self.internet(), self.cloud(), self.modem(), self.balance(force_balance), *self.jobs(), *self.pi()]
+        checks = [self.internet(), self.cloud(), self.modem(), self.promo(), self.sending()]
+        bal = self.balance(force_balance)
+        if bal["status"] != "off" or self.balance_code:  # optional: only shown once a balance code is set
+            checks.append(bal)
+        checks += [*self.jobs(), *self.pi()]
         worst = min((c["status"] for c in checks), key=lambda s: ORDER[s])
         return {"status": worst if worst != "off" else "ok", "checkedAt": iso(utcnow()),
                 "problems": sum(c["status"] in ("warn", "fail") for c in checks), "checks": checks}
@@ -157,3 +188,9 @@ def _mem_available_mb() -> Optional[float]:
     except (OSError, ValueError):
         pass
     return None
+
+
+def _nice_date(iso_date: str) -> str:
+    from datetime import date
+    d = date.fromisoformat(iso_date)
+    return f"{d:%a %b} {d.day}"

@@ -221,17 +221,19 @@ added to the report's history. The tab name shows the number of open reports.
 ## System health (Tools tab)
 
 The **System health** card at the top of Tools shows, with a coloured dot each:
-internet, Firebase, the SMS modem and signal, the SIM's load, the website import
+internet, Firebase, the SMS modem and signal, the SIM promo, whether texts are going out, the website import
 and SMS-reply jobs, and the Pi's temperature, free storage and memory. When
 something needs attention the tab is renamed **Tools ⚠** (checked every 2 minutes).
 
-SIM load is read with your network's balance code (USSD). Add it to
-`~/.config/aureoclean/aureoclean.env`, using the code you'd dial on a phone:
+**SIM promo:** if the modem's SIM is on a promo (e.g. Globe unli calls & texts for
+15 days), enter it in Tools → SMS → **Set promo…** (name, days, day registered).
+System health counts down the days, and the admins get a text the day before it
+ends and again if it has ended. **Sending texts** turns red when texts start
+failing — e.g. the promo ran out, or it doesn't cover the other network.
 
-    AUREOCLEAN_SIM_BALANCE_USSD=<balance code>
-    AUREOCLEAN_SIM_LOW_BALANCE=20
-
-It's checked once an hour, or right away with **Check load**.
+Optional: to also read the balance from the network, add the code you'd dial on
+a phone to `~/.config/aureoclean/aureoclean.env` as
+`AUREOCLEAN_SIM_BALANCE_USSD=...`; a **Check balance** button then appears.
 
 ## Kiosk mode (7" screen)
 
