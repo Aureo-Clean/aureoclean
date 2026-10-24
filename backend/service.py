@@ -18,6 +18,7 @@ Accounts and roles
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import threading
 from dataclasses import dataclass
@@ -242,6 +243,8 @@ class AureoService:
         self.C_REQUESTS = f"{prefix}RegistrationRequests"
         self.C_INVITES = f"{prefix}AdminInvites"
         self.C_AUDIT = f"{prefix}AuditLogs"
+        self.C_WEB_SIGNUPS = f"{prefix}WebSignups"   # written by the public sign-up website (create-only)
+        self.C_REPORTS = f"{prefix}Reports"
         self.C_SESSIONS = f"{prefix}Sessions"
         self.sessions = SessionManager(settings.session_hours, store, self.C_SESSIONS)
         self.login_failures = FailureTracker(settings.max_login_failures, settings.login_lockout_minutes)
@@ -380,6 +383,9 @@ class AureoService:
         return {"requestId": request_id, "username": req["username"], "code": code, "expiresAt": expires}
 
     def approve_request(self, admin: Session, request_id: str) -> dict:
+        req = self.store.get(self.C_REQUESTS, request_id)
+        if req and req.get("source") == "web":
+            return self._approve_sms_contact(admin, request_id)
         return self._issue_code(admin, request_id, (REQUEST_PENDING,), "janitor_request_approved")
 
     def reissue_code(self, admin: Session, request_id: str) -> dict:
@@ -568,6 +574,9 @@ class AureoService:
                 self.login_failures.record_failure(key)
                 raise generic
             email = entry.get("email", "")
+        if not email:  # SMS-only janitor contacts can't sign in to the app
+            self.login_failures.record_failure(key)
+            raise generic
 
         try:
             uid = self.identity.verify_password(email, password)
@@ -829,7 +838,8 @@ class AureoService:
             others = [u for _, u in self.store.query(self.C_USERS, role=ROLE_ADMIN, status="active") if u["uid"] != uid]
             if not others:
                 raise BadRequest("At least one active administrator must remain.")
-        self.identity.set_disabled(uid, not active)
+        if not profile.get("smsOnly"):
+            self.identity.set_disabled(uid, not active)
         profile["status"] = "active" if active else "disabled"
         self.store.set(self.C_USERS, uid, profile)
         if not active:
@@ -1013,6 +1023,211 @@ class AureoService:
         where = "written to the test outbox (test mode)" if self.sms.mode == "log" else f"sent to {profile['smsPhone']}"
         return {"message": f"Test SMS {where}."}
 
+    # ============================================================ web sign-up (janitors)
+    def _username_from_name(self, full_name: str) -> str:
+        parts = [re.sub(r"[^a-z0-9]", "", w) for w in full_name.lower().split()]
+        parts = [w for w in parts if w]
+        base = ".".join([parts[0], parts[-1]] if len(parts) > 1 else parts)[:20] or "janitor"
+        base = base if len(base) >= 3 else (base + "jan")[:3]
+        candidate, n = base, 1
+        while self.store.get(self.C_USERNAMES, candidate):
+            n += 1
+            candidate = f"{base}{n}"
+        return candidate
+
+    def _phone_in_use(self, phone: str) -> bool:
+        if self.store.query(self.C_USERS, smsPhone=phone):
+            return True
+        return any(r.get("status") in (REQUEST_PENDING, REQUEST_APPROVED)
+                   for _, r in self.store.query(self.C_REQUESTS, phone=phone))
+
+    def submit_web_signup(self, full_name: str, phone: str, email: str = "") -> dict:
+        """A janitor signed up on the website: add it to the admin's Requests list."""
+        full_name = _check(full_name, validate_full_name)
+        try:
+            phone = normalize_phone(phone)
+        except ValueError as exc:
+            raise BadRequest(str(exc))
+        email = _check(email, validate_email) if (email or "").strip() else ""
+        if self._phone_in_use(phone):
+            raise Conflict("This mobile number is already registered or waiting for approval.")
+        if email and self._email_in_use(email):
+            raise Conflict("This email is already registered or waiting for approval.")
+
+        request_id = generate_id()
+        now = iso(utcnow())
+        for _ in range(5):  # another sign-up may grab the same username at the same moment
+            username = self._username_from_name(full_name)
+            try:
+                self.store.create(self.C_USERNAMES, username,
+                                  {"kind": "request", "requestId": request_id, "email": email, "createdAt": now})
+                break
+            except AlreadyExists:
+                continue
+        else:
+            raise Conflict("Couldn't reserve a username. Try again.")
+        self.store.create(self.C_REQUESTS, request_id, {
+            "username": username, "usernameNormalized": username, "fullName": full_name, "email": email,
+            "phone": phone, "role": ROLE_JANITOR, "status": REQUEST_PENDING, "createdAt": now,
+            "activationAttempts": 0, "source": "web",
+        })
+        self.audit("web_signup_received", {"type": "applicant", "username": username}, request_id,
+                   {"phone": mask_phone(phone)})
+        return {"requestId": request_id, "username": username}
+
+    def import_web_signups(self) -> int:
+        """Move sign-ups from the website into Requests. Run every few seconds by the backend."""
+        count = 0
+        for doc_id, data in self.store.query(self.C_WEB_SIGNUPS):
+            try:
+                self.submit_web_signup(data.get("fullName", ""), data.get("phone", ""), data.get("email", ""))
+                count += 1
+            except ServiceError as exc:
+                self.audit("web_signup_rejected", {"type": "system", "username": "web"}, doc_id,
+                           {"reason": exc.message, "phone": mask_phone(str(data.get("phone", "")))})
+                try:
+                    self.sms.send(normalize_phone(data.get("phone", "")),
+                                  f"AureoClean: we couldn't accept your sign-up. {exc.message}")
+                except (SmsError, ValueError):
+                    pass
+            finally:
+                self.store.delete(self.C_WEB_SIGNUPS, doc_id)
+        return count
+
+    def _approve_sms_contact(self, admin: Session, request_id: str) -> dict:
+        """Approve a website sign-up: the janitor becomes an SMS contact (no app sign-in)."""
+        now = iso(utcnow())
+
+        def claim(current):
+            if current is None:
+                raise NotFound("Request not found.")
+            if current.get("status") != REQUEST_PENDING:
+                raise Conflict(f"This request is already {current.get('status')}.")
+            current.update(status=REQUEST_ACTIVATED, reviewedBy={"uid": admin.uid, "username": admin.username},
+                           reviewedAt=now, activatedAt=now)
+            return current
+
+        req = self.store.transact(self.C_REQUESTS, request_id, claim)
+        uid = f"sms-{request_id}"
+        self.store.set(self.C_USERS, uid, {
+            "uid": uid, "username": req["username"], "usernameNormalized": req["usernameNormalized"],
+            "fullName": req["fullName"], "email": req.get("email", ""), "role": ROLE_JANITOR, "status": "active",
+            "smsOnly": True, "smsPhone": req["phone"], "smsAlerts": True, "smsVerifiedAt": now,
+            "createdAt": now, "requestId": request_id, "approvedBy": {"uid": admin.uid, "username": admin.username},
+        })
+        self.store.set(self.C_USERNAMES, req["usernameNormalized"],
+                       {"kind": "user", "uid": uid, "email": req.get("email", ""), "createdAt": now})
+        self.audit("janitor_contact_approved", admin.actor, uid, {"username": req["username"],
+                                                                  "phone": mask_phone(req["phone"])})
+        try:
+            self.sms.send(req["phone"], f"Welcome to AureoClean, {req['fullName'].split()[0]}! You'll now get "
+                                        "restroom alerts by SMS from this number.")
+            note = f"A welcome text was sent to {req['phone']}."
+        except SmsError as exc:
+            note = f"Couldn't send the welcome text ({exc.message})."
+        return {"requestId": request_id, "username": req["username"], "contact": True,
+                "message": f"{req['fullName']} is now an SMS contact. {note}"}
+
+    # ============================================================ reports
+    REPORT_CATEGORIES = {"emergency": "Emergency", "facility": "Broken facility", "system": "System problem"}
+    REPORT_PRIORITIES = ("low", "normal", "high", "critical")
+    REPORT_STATUSES = ("open", "in_progress", "resolved")
+
+    def create_report(self, admin: Session, category: str, title: str, location: str = "", details: str = "",
+                      priority: str = "", notify: str = "none") -> dict:
+        if category not in self.REPORT_CATEGORIES:
+            raise BadRequest("Choose a report type.")
+        title = " ".join((title or "").split())[:80]
+        if len(title) < 3:
+            raise BadRequest("Give the report a short title (at least 3 characters).")
+        location = " ".join((location or "").split())[:60]
+        details = (details or "").strip()[:1000]
+        priority = priority or ("critical" if category == "emergency" else "normal")
+        if priority not in self.REPORT_PRIORITIES:
+            raise BadRequest("Unknown priority.")
+        if notify not in ("none", "janitors", "everyone"):
+            raise BadRequest("Unknown notify option.")
+        report_id = generate_id()
+        now = iso(utcnow())
+        report = {
+            "category": category, "title": title, "location": location, "details": details, "priority": priority,
+            "status": "open", "createdAt": now, "updatedAt": now,
+            "createdBy": {"uid": admin.uid, "username": admin.username}, "notes": [],
+        }
+        self.store.create(self.C_REPORTS, report_id, report)
+        self.audit("report_created", admin.actor, report_id, {"category": category, "title": title})
+        sent = 0
+        if notify != "none":
+            recipients = self.sms_recipients(None if notify == "everyone" else ROLE_JANITOR)
+            label = "EMERGENCY" if category == "emergency" else self.REPORT_CATEGORIES[category]
+            text = f"AureoClean {label}: {title}" + (f" at {location}" if location else "") + (
+                f". {details}" if details else "")
+            self._notify_async(report_id, recipients, text)
+            sent = len(recipients)
+        return {"id": report_id, **report, "notifying": sent,
+                "message": "Report saved." + (f" Texting {sent} people…" if sent else "")}
+
+    def _notify_async(self, report_id: str, recipients: list[dict], text: str) -> None:
+        def work():
+            ok, failed = 0, []
+            for r in recipients:
+                try:
+                    self.sms.send(r["phone"], text)
+                    ok += 1
+                except SmsError as exc:
+                    failed.append(f"{r['username']}: {exc.message}")
+            note = f"SMS sent to {ok} of {len(recipients)}." + (f" Failed: {'; '.join(failed)[:300]}" if failed else "")
+            self._add_report_note(report_id, {"type": "system", "username": "sms"}, note)
+
+        if not recipients:
+            return
+        if getattr(self, "sync_notifications", False):
+            work()
+        else:
+            threading.Thread(target=work, daemon=True, name="report-sms").start()
+
+    def _add_report_note(self, report_id: str, by: dict, text: str, status: Optional[str] = None) -> dict:
+        def update(current):
+            if current is None:
+                raise NotFound("Report not found.")
+            now = iso(utcnow())
+            note = {"at": now, "by": by.get("username", ""), "text": text}
+            if status and status != current.get("status"):
+                note["status"] = status
+                current["status"] = status
+                current["resolvedAt"] = now if status == "resolved" else None
+            current.setdefault("notes", []).append(note)
+            current["notes"] = current["notes"][-50:]
+            current["updatedAt"] = now
+            return current
+
+        return self.store.transact(self.C_REPORTS, report_id, update)
+
+    def update_report(self, admin: Session, report_id: str, status: str = "", note: str = "") -> dict:
+        if status and status not in self.REPORT_STATUSES:
+            raise BadRequest("Unknown status.")
+        note = (note or "").strip()[:500]
+        if not status and not note:
+            raise BadRequest("Change the status or write a note.")
+        labels = {"open": "Reopened", "in_progress": "Marked in progress", "resolved": "Marked resolved"}
+        text = note or labels.get(status, "")
+        report = self._add_report_note(report_id, admin.actor, text, status or None)
+        self.audit("report_updated", admin.actor, report_id, {"status": status or None})
+        return {"id": report_id, **report}
+
+    def list_reports(self, status: str = "", category: str = "") -> list[dict]:
+        filters = {}
+        if status:
+            filters["status"] = status
+        if category:
+            filters["category"] = category
+        rows = [dict(data, id=doc_id) for doc_id, data in self.store.query(self.C_REPORTS, **filters)]
+        order = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+        # Open first, most urgent first, newest first within the same priority.
+        rows.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+        rows.sort(key=lambda r: (r["status"] == "resolved", order.get(r.get("priority"), 9)))
+        return rows
+
     # ============================================================ links
     def links(self, session: Session) -> list[dict]:
         """External tools each role may open from the app.
@@ -1044,6 +1259,7 @@ class AureoService:
             "storageMode": self.settings.mode,
             "smsMode": self.sms.mode,
             "smsSubscribers": len(self.sms_recipients()),
+            "openReports": sum(r.get("status") != "resolved" for _, r in self.store.query(self.C_REPORTS)),
         }
 
     def janitor_overview(self, session: Session) -> dict:

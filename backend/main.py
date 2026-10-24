@@ -68,6 +68,20 @@ class UserStatusBody(BaseModel):
     active: bool
 
 
+class ReportBody(BaseModel):
+    category: str = Field(max_length=20)
+    title: str = Field(max_length=120)
+    location: str = Field(default="", max_length=80)
+    details: str = Field(default="", max_length=1200)
+    priority: str = Field(default="", max_length=10)
+    notify: str = Field(default="none", max_length=10)
+
+
+class ReportUpdateBody(BaseModel):
+    status: str = Field(default="", max_length=20)
+    note: str = Field(default="", max_length=600)
+
+
 class PhoneBody(BaseModel):
     phone: str = Field(max_length=24)
 
@@ -246,6 +260,19 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def sms_test_to(body: PhoneBody, session: Session = Depends(admin)):
         return svc().send_test_sms_to(session, body.phone)
 
+    @app.get("/admin/reports")
+    def list_reports(status: str = "", category: str = "", _: Session = Depends(admin)):
+        return svc().list_reports(status, category)
+
+    @app.post("/admin/reports")
+    def create_report(body: ReportBody, session: Session = Depends(admin)):
+        return svc().create_report(session, body.category, body.title, body.location, body.details,
+                                   body.priority, body.notify)
+
+    @app.post("/admin/reports/{report_id}/update")
+    def update_report(report_id: str, body: ReportUpdateBody, session: Session = Depends(admin)):
+        return svc().update_report(session, report_id, body.status, body.note)
+
     @app.get("/admin/invites")
     def list_invites(_: Session = Depends(admin)):
         return svc().list_invites()
@@ -288,7 +315,26 @@ def run() -> None:
     app.state.network = NetworkWatch()
     app.state.network.start()
     log.info("AureoClean API starting in %s mode on %s:%s", settings.mode, settings.host, settings.port)
+    start_web_signup_import(service)
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
+
+
+def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
+    """Collect janitor sign-ups from the website into Requests, every few seconds."""
+    import threading
+    import time
+
+    def loop():
+        while True:
+            try:
+                n = service.import_web_signups()
+                if n:
+                    log.info("Imported %d website sign-up(s)", n)
+            except Exception:  # noqa: BLE001 - keep trying (e.g. internet down)
+                log.warning("Website sign-up import failed; will retry", exc_info=True)
+            time.sleep(every)
+
+    threading.Thread(target=loop, daemon=True, name="web-signup-import").start()
 
 
 if __name__ == "__main__":

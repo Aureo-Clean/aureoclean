@@ -141,8 +141,8 @@ class ApiClient:
     def list_requests(self, status: str = ""):
         return self._call("GET", "/admin/requests", query={"status": status})
 
-    def approve(self, request_id):
-        return self._call("POST", f"/admin/requests/{urllib.parse.quote(request_id)}/approve")
+    def approve(self, request_id):  # may text a welcome message
+        return self._call("POST", f"/admin/requests/{urllib.parse.quote(request_id)}/approve", timeout=SMS_TIMEOUT)
 
     def reissue_code(self, request_id):
         return self._call("POST", f"/admin/requests/{urllib.parse.quote(request_id)}/reissue-code")
@@ -155,6 +155,16 @@ class ApiClient:
 
     def set_user_active(self, uid, active: bool):
         return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/status", {"active": active})
+
+    def list_reports(self, status: str = "", category: str = ""):
+        return self._call("GET", "/admin/reports", query={"status": status, "category": category})
+
+    def create_report(self, **report):
+        return self._call("POST", "/admin/reports", report)
+
+    def update_report(self, report_id: str, status: str = "", note: str = ""):
+        return self._call("POST", f"/admin/reports/{urllib.parse.quote(report_id)}/update",
+                          {"status": status, "note": note})
 
     def list_invites(self):
         return self._call("GET", "/admin/invites")

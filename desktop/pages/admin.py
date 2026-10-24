@@ -3,13 +3,15 @@ Laid out for the 7-inch 800x480 display (no stat tiles; counts live in the tab n
 from __future__ import annotations
 
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QMessageBox,
+    QPlainTextEdit,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -56,6 +58,11 @@ ACTION_LABELS = {
     "sms_test_sent": "Test SMS sent",
     "sms_modem_enabled": "SMS switched to GSM modem",
     "sms_test_mode": "SMS switched to test mode",
+    "web_signup_received": "Website sign-up received",
+    "web_signup_rejected": "Website sign-up rejected",
+    "janitor_contact_approved": "Janitor added as SMS contact",
+    "report_created": "Report created",
+    "report_updated": "Report updated",
     "admin_email_verified": "Admin email verified",
     "verification_email_sent": "Verification email sent",
 }
@@ -101,7 +108,7 @@ class RequestsTab(_Tab):
         bar.addWidget(button("Refresh", "Small", self.refresh))
         self.layout_.addLayout(bar)
 
-        self.table = make_table(["Submitted", "Full name", "Username", "Email", "Status", "Note"])
+        self.table = make_table(["Submitted", "Full name", "Mobile / email", "From", "Status", "Note"])
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.layout_.addWidget(self.table, 1)
         self.layout_.addWidget(self.message)
@@ -130,7 +137,9 @@ class RequestsTab(_Tab):
                     note = r.get("rejectReason") or ""
                 elif r.get("reviewedBy"):
                     note = f"by {r['reviewedBy'].get('username')}"
-                data.append([fmt_time(r.get("createdAt")), r.get("fullName"), r.get("username"), r.get("email"),
+                contact = r.get("phone") or r.get("email") or "—"
+                source = "Website" if r.get("source") == "web" else "App"
+                data.append([fmt_time(r.get("createdAt")), r.get("fullName"), contact, source,
                              status_item(r["status"]), note])
             fill_table(self.table, data, rows)
             if not rows:
@@ -159,15 +168,25 @@ class RequestsTab(_Tab):
         ).exec()
 
     def _after(self, result, req, show_code=True):
-        if show_code:
+        if show_code and result.get("code"):
             self._show_code(result, req)
+        elif result.get("message"):
+            self.message.success(result["message"])
         self.refresh()
         self.on_change()
 
     def approve(self):
         req = selected_object(self.table)
-        if not req or not _confirm(self, "Approve request", f"Approve {req['fullName']} ({req['username']}) as a janitor?"):
+        if not req:
             return
+        if req.get("source") == "web":
+            question = (f"Approve {req['fullName']} as a janitor?\n\nThey'll become an SMS contact and get a "
+                        f"welcome text at {req.get('phone')}.")
+        else:
+            question = f"Approve {req['fullName']} ({req['username']}) as a janitor?"
+        if not _confirm(self, "Approve request", question):
+            return
+        self.message.info("Approving… (sending the welcome text can take up to a minute)")
         run_async(lambda: self.api.approve(req["id"]), lambda r: self._after(r, req), self.fail)
 
     def reissue(self):
@@ -184,6 +203,208 @@ class RequestsTab(_Tab):
         if not ok:
             return
         run_async(lambda: self.api.reject(req["id"], reason), lambda r: self._after(r, req, False), self.fail)
+
+
+# ====================================================================== reports
+REPORT_TYPES = [("Emergency", "emergency"), ("Broken facility", "facility"), ("System problem", "system")]
+PRIORITIES = [("Critical", "critical"), ("High", "high"), ("Normal", "normal"), ("Low", "low")]
+STATUS_LABELS = {"open": "Open", "in_progress": "In progress", "resolved": "Resolved"}
+TYPE_LABELS = dict((v, k) for k, v in REPORT_TYPES)
+
+
+class NewReportDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("New report")
+        self.setModal(True)
+        body = QVBoxLayout(self)
+        body.setContentsMargins(16, 14, 16, 14)
+        body.setSpacing(7)
+        body.addWidget(label("New report", "Section"))
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+
+        def combo(items):
+            c = QComboBox()
+            for text, value in items:
+                c.addItem(text, value)
+            return c
+
+        self.category = combo(REPORT_TYPES)
+        self.priority = combo(PRIORITIES)
+        self.notify = combo([("Don't text anyone", "none"), ("Text the janitors", "janitors"),
+                             ("Text everyone with SMS on", "everyone")])
+        self.title_f = Field("What's wrong? *", "e.g. Broken faucet, Fire alarm, Sensor offline")
+        self.location = Field("Where", "e.g. 2F Male CR")
+        for col, (text, widget) in enumerate([("Type", self.category), ("Priority", self.priority)]):
+            box = QVBoxLayout()
+            box.setSpacing(4)
+            box.addWidget(label(text, "FieldLabel"))
+            box.addWidget(widget)
+            grid.addLayout(box, 0, col)
+        grid.addWidget(self.title_f, 1, 0)
+        grid.addWidget(self.location, 1, 1)
+        body.addLayout(grid)
+        body.addWidget(label("Details", "FieldLabel"))
+        self.details = QPlainTextEdit()
+        self.details.setPlaceholderText("Anything that helps fix it (optional)")
+        self.details.setFixedHeight(70)
+        body.addWidget(self.details)
+        nrow = QHBoxLayout()
+        nrow.addWidget(label("Notify by SMS", "FieldLabel"))
+        nrow.addWidget(self.notify, 1)
+        body.addLayout(nrow)
+        self.message = Message()
+        body.addWidget(self.message)
+        row = QHBoxLayout()
+        row.addWidget(button("Cancel", on_click=self.reject))
+        row.addStretch(1)
+        row.addWidget(button("Save report", "Primary", self.save))
+        body.addLayout(row)
+        self.category.currentIndexChanged.connect(self._type_changed)
+        self._type_changed()
+        self.setMinimumWidth(min(560, parent.window().width() - 20))
+        self.result_data = None
+
+    def _type_changed(self):
+        emergency = self.category.currentData() == "emergency"
+        self.priority.setCurrentIndex(0 if emergency else 2)
+        self.notify.setCurrentIndex(1 if emergency else 0)
+
+    def save(self):
+        if len(self.title_f.value()) < 3:
+            self.message.error("Say briefly what's wrong (at least 3 characters).")
+            return
+        self.result_data = {
+            "category": self.category.currentData(), "title": self.title_f.value(),
+            "location": self.location.value(), "details": self.details.toPlainText().strip(),
+            "priority": self.priority.currentData(), "notify": self.notify.currentData(),
+        }
+        self.accept()
+
+
+class ReportsTab(_Tab):
+    """Emergencies, broken facilities and system problems, with their status history."""
+
+    SHOW = [("Open & in progress", "active"), ("Resolved", "resolved"), ("All", "")]
+
+    def __init__(self, api, on_change):
+        super().__init__(api)
+        self.on_change = on_change
+        bar = QHBoxLayout()
+        self.show_filter = QComboBox()
+        for text, value in self.SHOW:
+            self.show_filter.addItem(text, value)
+        self.type_filter = QComboBox()
+        self.type_filter.addItem("All types", "")
+        for text, value in REPORT_TYPES:
+            self.type_filter.addItem(text, value)
+        for c in (self.show_filter, self.type_filter):
+            c.currentIndexChanged.connect(self.refresh)
+            bar.addWidget(c)
+        bar.addStretch(1)
+        bar.addWidget(button("Refresh", "Small", self.refresh))
+        bar.addWidget(button("+ New report", "Gold", self.new_report))
+        self.layout_.addLayout(bar)
+
+        self.table = make_table(["Priority", "Type", "What", "Where", "Status", "Reported", "Updated"])
+        self.table.itemSelectionChanged.connect(self.update_buttons)
+        self.table.itemDoubleClicked.connect(lambda *_: self.details())
+        self.layout_.addWidget(self.table, 1)
+        self.layout_.addWidget(self.message)
+
+        actions = QHBoxLayout()
+        self.progress_btn = button("In progress", on_click=lambda: self.set_status("in_progress"))
+        self.resolve_btn = button("Resolved ✓", "Primary", lambda: self.set_status("resolved"))
+        self.reopen_btn = button("Reopen", on_click=lambda: self.set_status("open"))
+        self.note_btn = button("Add note…", on_click=self.add_note)
+        self.details_btn = button("Details", on_click=self.details)
+        for b in (self.progress_btn, self.resolve_btn, self.reopen_btn, self.note_btn, self.details_btn):
+            actions.addWidget(b)
+        actions.addStretch(1)
+        self.layout_.addLayout(actions)
+        self.update_buttons()
+
+    def refresh(self):
+        show, category = self.show_filter.currentData(), self.type_filter.currentData()
+        status = "resolved" if show == "resolved" else ""
+
+        def ok(rows):
+            if show == "active":
+                rows = [r for r in rows if r["status"] != "resolved"]
+            pri_colors = {"critical": "rejected", "high": "pending", "normal": "approved", "low": "expired"}
+            data = []
+            for r in rows:
+                pri = status_item(pri_colors.get(r["priority"], "expired"))
+                pri.setText(r["priority"].capitalize())
+                st = status_item({"open": "pending", "in_progress": "approved", "resolved": "active"}[r["status"]])
+                st.setText(STATUS_LABELS[r["status"]])
+                data.append([pri, TYPE_LABELS.get(r["category"], r["category"]), r["title"], r.get("location") or "—",
+                             st, fmt_time(r.get("createdAt")), fmt_time(r.get("updatedAt"))])
+            fill_table(self.table, data, rows)
+            if rows:
+                self.message.clear()
+            else:
+                self.message.info("Nothing to show. Use “+ New report” to log an emergency, a broken "
+                                  "facility or a system problem.")
+            self.update_buttons()
+
+        run_async(lambda: self.api.list_reports(status, category), ok, self.fail)
+
+    def update_buttons(self):
+        r = selected_object(self.table)
+        st = r["status"] if r else None
+        self.progress_btn.setEnabled(st == "open")
+        self.resolve_btn.setEnabled(st in ("open", "in_progress"))
+        self.reopen_btn.setEnabled(st == "resolved")
+        self.note_btn.setEnabled(bool(r))
+        self.details_btn.setEnabled(bool(r))
+
+    def _done(self, result):
+        if result.get("message"):
+            self.message.success(result["message"])
+        self.refresh()
+        self.on_change()
+
+    def new_report(self):
+        dialog = NewReportDialog(self)
+        if dialog.exec() and dialog.result_data:
+            data = dialog.result_data
+            run_async(lambda: self.api.create_report(**data), self._done, self.fail)
+
+    def set_status(self, status):
+        r = selected_object(self.table)
+        if r:
+            run_async(lambda: self.api.update_report(r["id"], status=status), self._done, self.fail)
+
+    def add_note(self):
+        r = selected_object(self.table)
+        if not r:
+            return
+        text, ok = QInputDialog.getText(self, "Add note", f"Note for “{r['title']}”:")
+        if ok and text.strip():
+            run_async(lambda: self.api.update_report(r["id"], note=text.strip()), self._done, self.fail)
+
+    def details(self):
+        r = selected_object(self.table)
+        if not r:
+            return
+        lines = [f"{TYPE_LABELS.get(r['category'], r['category'])} · {r['priority'].capitalize()} · "
+                 f"{STATUS_LABELS[r['status']]}",
+                 f"Where: {r.get('location') or '—'}",
+                 f"Reported {fmt_time(r.get('createdAt'))} by {(r.get('createdBy') or {}).get('username', '?')}"]
+        if r.get("details"):
+            lines += ["", r["details"]]
+        if r.get("notes"):
+            lines += ["", "History:"] + [f"• {fmt_time(n['at'])} — {n.get('by', '')}: {n['text']}"
+                                         for n in r["notes"]]
+        box = QMessageBox(self)
+        box.setWindowTitle("Report")
+        box.setText(r["title"])
+        box.setInformativeText("\n".join(lines))
+        box.exec()
 
 
 # ====================================================================== users
@@ -494,7 +715,7 @@ class AuditTab(_Tab):
 
 
 # ====================================================================== console
-TAB_DASHBOARD, TAB_REQUESTS, TAB_USERS, TAB_INVITES, TAB_AUDIT, TAB_TOOLS, TAB_ACCOUNT = range(7)
+TAB_DASHBOARD, TAB_REQUESTS, TAB_REPORTS, TAB_USERS, TAB_INVITES, TAB_AUDIT, TAB_TOOLS, TAB_ACCOUNT = range(8)
 
 
 class AdminDashboard(QWidget):
@@ -513,6 +734,7 @@ class AdminDashboard(QWidget):
         dl = QVBoxLayout(self.dash_tab)
         dl.setContentsMargins(0, 0, 0, 0)
         self.requests = RequestsTab(self.api, self.refresh_overview)
+        self.reports = ReportsTab(self.api, self.refresh_overview)
         self.users = UsersTab(self.api, self.refresh_overview)
         self.invites = InvitesTab(self.api)
         self.audit = AuditTab(self.api)
@@ -539,6 +761,7 @@ class AdminDashboard(QWidget):
 
         self.tabs.addTab(self.dash_tab, "Dashboard")
         self.tabs.addTab(self.requests, "Requests")
+        self.tabs.addTab(self.reports, "Reports")
         self.tabs.addTab(self.users, "Users")
         self.tabs.addTab(scroll_page(self.invites), "Invites")
         self.tabs.addTab(self.audit, "Audit")
@@ -547,13 +770,24 @@ class AdminDashboard(QWidget):
         self.tabs.currentChanged.connect(self._tab_changed)
         root.addWidget(self.tabs, 1)
 
+        # Website sign-ups and new reports arrive in the background: keep the counts fresh.
+        self._poll = QTimer(self)
+        self._poll.timeout.connect(self._poll_tick)
+
+    def _poll_tick(self):
+        if self.isVisible() and self.nav.api.token:
+            self.refresh_overview()
+            if self.tabs.currentIndex() == TAB_REQUESTS:
+                self.requests.refresh()
+
     def _tab_changed(self, index):
-        refreshers = {TAB_REQUESTS: self.requests.refresh, TAB_USERS: self.users.refresh,
+        refreshers = {TAB_REQUESTS: self.requests.refresh, TAB_REPORTS: self.reports.refresh,
+                      TAB_USERS: self.users.refresh,
                       TAB_INVITES: self.invites.refresh, TAB_AUDIT: self.audit.refresh,
                       TAB_TOOLS: self.tools.refresh, TAB_ACCOUNT: self.load_account}
         if index in refreshers:
             refreshers[index]()
-        if index in (TAB_DASHBOARD, TAB_REQUESTS):
+        if index in (TAB_DASHBOARD, TAB_REQUESTS, TAB_REPORTS):
             self.refresh_overview()
 
     def enter(self, user: dict):
@@ -566,6 +800,7 @@ class AdminDashboard(QWidget):
         self.tabs.setCurrentIndex(TAB_DASHBOARD)
         self.tabs.blockSignals(False)
         self.refresh_overview()
+        self._poll.start(30_000)
 
     def load_account(self):
         self.sms.message.clear()  # don't show an old "test mode" note after switching modes
@@ -577,6 +812,8 @@ class AdminDashboard(QWidget):
         def ok(ov):
             pending = ov.get("pendingRequests", 0)
             self.tabs.setTabText(TAB_REQUESTS, f"Requests ({pending})" if pending else "Requests")
+            open_reports = ov.get("openReports", 0)
+            self.tabs.setTabText(TAB_REPORTS, f"Reports ({open_reports})" if open_reports else "Reports")
             self.requests.summary.setText(
                 f"{pending} pending · {ov.get('awaitingActivation', 0)} awaiting activation · "
                 f"{ov.get('activeJanitors', 0)} active janitors")

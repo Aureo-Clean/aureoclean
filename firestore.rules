@@ -1,12 +1,19 @@
 rules_version = '2';
 
-// AureoClean's account collections are only ever touched by the backend on the
-// Raspberry Pi, which uses the Admin SDK (Admin SDK access bypasses these rules).
-// No phone, browser or other client may read or write them directly.
+// AureoClean Firestore rules.
 //
-// IMPORTANT: if this Firebase project already has rules for other collections
-// (complaints, QR feedback, ...), MERGE this block into the existing rules
-// instead of replacing them.
+// * Everything AureoClean stores is only touched by the backend on the Raspberry Pi,
+//   which uses the Admin SDK (Admin SDK access bypasses these rules), so clients get no access.
+// * The ONE exception: the public janitor sign-up website may CREATE a sign-up in
+//   aureoWebSignups — only with the expected fields, only with the secret join code from
+//   the sign-up link, and it can never read, change or delete anything.
+//
+// Replace REPLACE_WITH_YOUR_JOIN_CODE with your own code when you paste this into
+// Firebase Console > Firestore Database > Rules. Never commit the real code to GitHub.
+// Changing the code here makes every old sign-up link stop working.
+//
+// IMPORTANT: if this project already has rules for other collections (complaints,
+// QR feedback, ...), MERGE these blocks into the existing rules instead of replacing them.
 service cloud.firestore {
   match /databases/{database}/documents {
     match /aureoUsers/{doc=**}                 { allow read, write: if false; }
@@ -15,5 +22,28 @@ service cloud.firestore {
     match /aureoAdminInvites/{doc=**}          { allow read, write: if false; }
     match /aureoAuditLogs/{doc=**}             { allow read, write: if false; }
     match /aureoSessions/{doc=**}              { allow read, write: if false; }
+    match /aureoReports/{doc=**}               { allow read, write: if false; }
+
+    match /aureoWebSignups/{signupId} {
+      allow create: if signupId.size() <= 40
+        && request.resource.data.keys().hasOnly(
+             ['fullName', 'phone', 'email', 'consent', 'source', 'joinCode', 'createdAt'])
+        && request.resource.data.keys().hasAll(
+             ['fullName', 'phone', 'consent', 'source', 'joinCode', 'createdAt'])
+        && request.resource.data.joinCode == 'REPLACE_WITH_YOUR_JOIN_CODE'
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 2
+        && request.resource.data.fullName.size() <= 80
+        && request.resource.data.phone is string
+        && request.resource.data.phone.matches('^[+]639[0-9]{9}$')
+        && (!('email' in request.resource.data)
+            || (request.resource.data.email is string
+                && request.resource.data.email.size() <= 254
+                && request.resource.data.email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$')))
+        && request.resource.data.consent == true
+        && request.resource.data.source == 'web'
+        && request.resource.data.createdAt == request.time;
+      allow read, update, delete: if false;
+    }
   }
 }

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src https://firestore.googleapis.com; base-uri 'none'; form-action 'none'">
+<title>AureoClean Janitor Sign-up</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --navy: #14336E; --blue: #1F63C6; --blue-dark: #174A9C; --green: #2E9E48; --green-soft: #E5F4E8;
+    --ink: #162338; --muted: #5B6B80; --line: #D5DFEA; --bg: #F2F5F9; --surface: #FFFFFF;
+    --danger: #B3261E; --danger-soft: #FBE9E7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --navy: #9DBCF5; --blue: #4C8BEA; --blue-dark: #3B74CC; --green: #5CC274; --green-soft: #17331F;
+      --ink: #E6ECF4; --muted: #9AA9BC; --line: #2C3A4F; --bg: #0F1724; --surface: #172235;
+      --danger: #FF8A80; --danger-soft: #3A1D1B;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px 40px;
+  }
+  main { width: 100%; max-width: 440px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .brand img { width: 56px; height: 56px; }
+  .brand h1 { margin: 0; font-size: 26px; font-weight: 800; color: var(--navy); letter-spacing: -.3px; }
+  .brand h1 span { color: var(--green); }
+  .brand p { margin: 2px 0 0; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+  h2 { margin: 0 0 4px; font-size: 20px; color: var(--navy); }
+  .lead { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+  label { display: block; font-size: 13px; font-weight: 650; color: var(--muted); margin: 14px 0 6px; }
+  .opt { font-weight: 400; }
+  input[type=text], input[type=tel], input[type=email] {
+    width: 100%; font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 12px; min-height: 48px;
+  }
+  input:focus { outline: 2px solid var(--blue); outline-offset: 0; border-color: var(--blue); }
+  .phone { display: flex; }
+  .phone span {
+    display: flex; align-items: center; padding: 0 12px; border: 1px solid var(--line); border-right: 0;
+    border-radius: 10px 0 0 10px; background: var(--bg); color: var(--muted); font-weight: 600;
+  }
+  .phone input { border-radius: 0 10px 10px 0; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .consent { display: flex; gap: 10px; align-items: flex-start; margin: 18px 0 4px; font-size: 14px; }
+  .consent input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--blue); flex: none; }
+  .trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+  button {
+    width: 100%; margin-top: 18px; min-height: 50px; border: 0; border-radius: 12px; cursor: pointer;
+    font: 700 16px system-ui, sans-serif; color: #fff; background: var(--blue);
+  }
+  button:hover { background: var(--blue-dark); }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { margin-top: 14px; padding: 10px 12px; border-radius: 10px; font-size: 14px; display: none; }
+  .msg.error { display: block; color: var(--danger); background: var(--danger-soft); }
+  .done { text-align: center; padding: 8px 0; }
+  .tick {
+    width: 64px; height: 64px; border-radius: 50%; margin: 4px auto 12px; display: grid; place-items: center;
+    background: var(--green-soft); color: var(--green); font-size: 34px; font-weight: 800;
+  }
+  .done ol { text-align: left; color: var(--muted); font-size: 14px; padding-left: 20px; }
+  footer { margin-top: 16px; text-align: center; font-size: 12px; color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <img src="logo.svg" alt="">
+    <div>
+      <h1>Aureo<span>Clean</span></h1>
+      <p>AUTOMATED HYGIENE MONITORING &amp; MAINTENANCE SYSTEM</p>
+    </div>
+  </div>
+
+  <section class="card" id="form-card">
+    <h2>Janitor sign-up</h2>
+    <p class="lead">Sign up to get restroom alerts by text. An administrator approves your request, then you'll
+      receive a welcome SMS.</p>
+    <form id="form" novalidate>
+      <label for="name">Full name</label>
+      <input id="name" type="text" autocomplete="name" maxlength="80" required placeholder="e.g. Mark Dave Agot">
+
+      <label for="phone">Mobile number</label>
+      <div class="phone">
+        <span>+63</span>
+        <input id="phone" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="13" required
+               placeholder="917 123 4567">
+      </div>
+      <div class="hint">The number where alerts will be sent.</div>
+
+      <label for="email">Email <span class="opt">(optional)</span></label>
+      <input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com">
+
+      <div class="trap" aria-hidden="true">
+        <label for="website">Leave this empty</label>
+        <input id="website" type="text" tabindex="-1" autocomplete="off">
+      </div>
+
+      <label class="consent">
+        <input id="consent" type="checkbox">
+        <span>I agree to receive AureoClean maintenance alerts by SMS on this number.</span>
+      </label>
+
+      <button id="submit" type="submit">Send sign-up request</button>
+      <div id="msg" class="msg" role="alert"></div>
+    </form>
+  </section>
+
+  <section class="card done" id="done-card" hidden>
+    <div class="tick">✓</div>
+    <h2>Request sent!</h2>
+    <p class="lead">Thank you. Here's what happens next:</p>
+    <ol>
+      <li>An administrator reviews your request.</li>
+      <li>Once approved, you'll get a <b>welcome text</b> on <b id="done-phone"></b>.</li>
+      <li>After that, restroom alerts arrive by SMS. No app needed.</li>
+    </ol>
+  </section>
+
+  <section class="card" id="bad-link" hidden>
+    <h2>This sign-up link is incomplete</h2>
+    <p class="lead">Ask your supervisor for the full AureoClean sign-up link (it ends with a join code).</p>
+  </section>
+
+  <footer>STI College Caloocan · AureoClean</footer>
+</main>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+  var cfg = window.AUREOCLEAN || {};
+  var join = new URLSearchParams(location.search).get("join") || "";
+  join = join.replace(/[^A-Za-z0-9]/g, "").slice(0, 40);
+  // Keep the code out of the address bar / screenshots once it has been read.
+  if (join && history.replaceState) history.replaceState(null, "", location.pathname);
+  if (!join) {
+    document.getElementById("form-card").hidden = true;
+    document.getElementById("bad-link").hidden = false;
+    return;
+  }
+
+  var form = document.getElementById("form");
+  var msg = document.getElementById("msg");
+  var btn = document.getElementById("submit");
+
+  function showError(text) { msg.textContent = text; msg.className = "msg error"; }
+  form.addEventListener("input", function () { msg.className = "msg"; });  // clear once they fix it
+
+  function normalizePhone(raw) {
+    var d = String(raw || "").replace(/[^0-9]/g, "");
+    if (d.indexOf("63") === 0) d = d.slice(2);
+    if (d.indexOf("0") === 0) d = d.slice(1);
+    return /^9[0-9]{9}$/.test(d) ? "+63" + d : null;
+  }
+
+  function randomId() {
+    var bytes = new Uint8Array(15), out = "", abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    crypto.getRandomValues(bytes);
+    for (var i = 0; i < bytes.length; i++) out += abc[bytes[i] % abc.length];
+    return out;
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    msg.className = "msg";
+    var name = document.getElementById("name").value.replace(/\s+/g, " ").trim();
+    var phone = normalizePhone(document.getElementById("phone").value);
+    var email = document.getElementById("email").value.trim().toLowerCase();
+    var consent = document.getElementById("consent").checked;
+
+    if (name.length < 2) return showError("Please enter your full name.");
+    if (!phone) return showError("Enter a valid mobile number, e.g. 917 123 4567.");
+    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) return showError("That email doesn't look right.");
+    if (!consent) return showError("Please tick the box to agree to receive SMS alerts.");
+
+    if (document.getElementById("website").value) { done(phone); return; } // bot trap: pretend success
+
+    var fields = {
+      fullName: { stringValue: name },
+      phone: { stringValue: phone },
+      consent: { booleanValue: true },
+      source: { stringValue: "web" },
+      joinCode: { stringValue: join }
+    };
+    if (email) fields.email = { stringValue: email };
+
+    var base = "projects/" + cfg.projectId + "/databases/(default)/documents";
+    var url = "https://firestore.googleapis.com/v1/" + base + ":commit" +
+              (cfg.apiKey ? "?key=" + encodeURIComponent(cfg.apiKey) : "");
+    var body = { writes: [{
+      update: { name: base + "/aureoWebSignups/" + randomId(), fields: fields },
+      updateTransforms: [{ fieldPath: "createdAt", setToServerValue: "REQUEST_TIME" }],
+      currentDocument: { exists: false }
+    }] };
+
+    btn.disabled = true; btn.textContent = "Sending…";
+    fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+                 referrerPolicy: "no-referrer", credentials: "omit" })
+      .then(function (res) {
+        if (res.ok) return done(phone);
+        if (res.status === 403) throw new Error("This sign-up link isn't valid any more. Ask your supervisor for the current link.");
+        if (res.status === 429) throw new Error("Too many requests right now. Please try again in a minute.");
+        throw new Error("Couldn't send your request (error " + res.status + "). Please try again.");
+      })
+      .catch(function (err) {
+        showError(err && err.message && err.message.indexOf("Failed to fetch") === -1 ? err.message
+                  : "No internet connection. Check your data or Wi-Fi and try again.");
+      })
+      .finally(function () { btn.disabled = false; btn.textContent = "Send sign-up request"; });
+  });
+
+  function done(phone) {
+    document.getElementById("done-phone").textContent = phone.replace(/^\+63(\d{3})(\d{3})(\d{4})$/, "0$1 $2 $3");
+    document.getElementById("form-card").hidden = true;
+    document.getElementById("done-card").hidden = false;
+  }
+})();
+</script>
+</body>
+</html>

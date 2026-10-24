@@ -168,6 +168,29 @@ It finds the right speed by itself and prints the exact settings to put in the c
 > short demo, use a 4G module such as a **SIM7600** or **A7670** — they speak the
 > same AT commands, so only the wiring and power change, not the code.
 
+## Janitor sign-up website
+
+`docs/` is a one-page website (GitHub Pages) where janitors sign up from their phone:
+full name, mobile number, optional email, and SMS consent.
+
+- The link contains a secret **join code**: `https://aureo-clean.github.io/aureoclean/?join=YOURCODE`.
+  The code is checked by the Firestore rules (`firestore.rules`), not stored in this repository.
+  Changing the code in the rules disables every old link.
+- The site can only *create* a sign-up in `aureoWebSignups`; it can't read or change anything.
+- The Pi backend collects new sign-ups every 20 s into **Requests** (marked "Website").
+  Duplicate or invalid numbers are rejected and the person gets a text explaining why.
+- **Approve** turns the person into an **SMS contact** (no app sign-in) and texts them a welcome message.
+
+Setup: GitHub repo → Settings → Pages → Deploy from a branch → `main` / `docs`. Then paste
+`firestore.rules` (with your join code) into Firebase Console → Firestore → Rules → Publish.
+
+## Reports tab (admin)
+
+Log **emergencies**, **broken facilities** and **system problems** with type, priority, location and
+details; move them Open → In progress → Resolved, add notes, and see the full history.
+Optionally text the janitors (or everyone with SMS on) when saving: the result of the texts is
+added to the report's history. The tab name shows the number of open reports.
+
 ## Updating to a new version
 
 Double-click **Update AureoClean** on the desktop. It closes the app, installs the
