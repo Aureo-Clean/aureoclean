@@ -11,7 +11,7 @@ from ..widgets import PASSWORD_MAX, BusyButton, Field, Message, button, card, la
 
 
 class TopBar(QFrame):
-    def __init__(self, title: str, on_logout):
+    def __init__(self, title: str, on_logout, on_lock=None):
         super().__init__()
         self.setObjectName("TopBar")
         row = QHBoxLayout(self)
@@ -23,6 +23,8 @@ class TopBar(QFrame):
         self.who = label("", wrap=False)
         row.addWidget(self.who)
         row.addSpacing(6)
+        if on_lock:
+            row.addWidget(button("Lock", "TopButton", on_lock))
         row.addWidget(button("Sign out", "TopButton", on_logout))
 
     def set_user(self, user: dict):
@@ -282,3 +284,75 @@ class ChangePasswordDialog(QDialog):
 
 def change_password_button(api, parent: QWidget):
     return button("Change password…", on_click=lambda: ChangePasswordDialog(api, parent).exec())
+
+
+class LockPinDialog(QDialog):
+    """Set (or remove) the 4-6 digit PIN that unlocks the idle screen."""
+
+    def __init__(self, api, parent: QWidget, has_pin: bool, on_done=None):
+        super().__init__(parent)
+        self.api, self.on_done = api, on_done
+        self.setWindowTitle("Screen-lock PIN")
+        self.setModal(True)
+        body = QVBoxLayout(self)
+        body.setContentsMargins(16, 14, 16, 14)
+        body.setSpacing(7)
+        body.addWidget(label("Screen-lock PIN", "Section"))
+        body.addWidget(label("The screen locks itself when nobody touches it for a few minutes. "
+                             "Unlock it with this PIN instead of your full password.", "Muted"))
+        self.password = Field("Your password", password=True, max_length=PASSWORD_MAX)
+        self.pin = Field("New PIN (4–6 digits)", password=True, max_length=6)
+        self.confirm = Field("Type the PIN again", password=True, max_length=6)
+        for f in (self.password, self.pin, self.confirm):
+            body.addWidget(f)
+        for f in (self.pin, self.confirm):
+            f.edit.setValidator(_digits_validator(f.edit))
+        self.message = Message()
+        body.addWidget(self.message)
+        row = QHBoxLayout()
+        row.addWidget(button("Cancel", on_click=self.reject))
+        if has_pin:
+            row.addWidget(button("Remove PIN", "Danger", lambda: self.save(remove=True)))
+        row.addStretch(1)
+        self.submit = button("Save PIN", "Primary", self.save)
+        self.busy = BusyButton(self.submit, "Saving…")
+        row.addWidget(self.submit)
+        body.addLayout(row)
+        self.setMinimumWidth(min(380, parent.window().width() - 20))
+
+    def save(self, remove: bool = False):
+        self.message.clear()
+        password, pin = self.password.text(), "" if remove else self.pin.value()
+        if not password:
+            self.message.error("Type your password first.")
+            return
+        if not remove and pin != self.confirm.value():
+            self.message.error("The two PINs don't match.")
+            return
+        self.busy.start()
+
+        def ok(result):
+            if self.on_done:
+                self.on_done(result["hasLockPin"])
+            QMessageBox.information(self, "Screen-lock PIN",
+                                    "PIN saved." if result["hasLockPin"] else "PIN removed: unlock with your password.")
+            self.accept()
+
+        run_async(lambda: self.api.set_lock_pin(password, pin), ok, lambda e: self.message.error(e.message),
+                  self.busy.stop)
+
+
+def _digits_validator(parent):
+    from PySide6.QtCore import QRegularExpression
+    from PySide6.QtGui import QRegularExpressionValidator
+    return QRegularExpressionValidator(QRegularExpression(r"\d{0,6}"), parent)
+
+
+def lock_pin_button(api, parent: QWidget, nav):
+    """'Screen-lock PIN…' button; nav.user['hasLockPin'] says whether one is set."""
+    def open_dialog():
+        def done(has_pin):
+            if nav.user is not None:
+                nav.user["hasLockPin"] = has_pin
+        LockPinDialog(api, parent, bool((nav.user or {}).get("hasLockPin")), done).exec()
+    return button("Screen-lock PIN…", on_click=open_dialog)

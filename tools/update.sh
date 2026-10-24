@@ -17,14 +17,27 @@ if [ -z "${AUREO_UPDATE_COPY:-}" ]; then
   cp "$0" "$COPY"
   AUREO_UPDATE_COPY=1 AUREO_APP_DIR="$APP_DIR" exec bash "$COPY" "$@"
 fi
-trap 'rm -f "$0"' EXIT
 cd "$APP_DIR"
 PY=.venv/bin/python
+UNIT=aureoclean-backend.service
+# Kiosk mode waits while this file exists, then reopens the new version by itself.
+touch "$APP_DIR/.updating"
+SERVICE=""
+finish() {
+  # Even if the update failed, bring the background service back.
+  [ -n "$SERVICE" ] && systemctl --user start "$UNIT" 2>/dev/null
+  rm -f "$0" "$APP_DIR/.updating"
+}
+trap finish EXIT
 
 say()  { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1;31m%s\033[0m\n' "$*"; read -rp "Press Enter to close…" _; exit 1; }
 
 say "Closing AureoClean"
+if systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null; then
+  SERVICE=1
+  systemctl --user stop "$UNIT" 2>/dev/null
+fi
 pkill -f "desktop.app" 2>/dev/null
 pkill -f "backend.main" 2>/dev/null
 sleep 1
@@ -76,5 +89,14 @@ fi
 ./tools/install_launcher.sh >/dev/null 2>&1 || true
 
 say "Done — starting AureoClean"
-setsid ./run_local.sh --maximized >/dev/null 2>&1 < /dev/null &
+if [ -n "$SERVICE" ]; then
+  systemctl --user daemon-reload 2>/dev/null
+  systemctl --user start "$UNIT" 2>/dev/null
+fi
+rm -f "$APP_DIR/.updating"
+if pgrep -f "tools/kiosk.sh" >/dev/null; then
+  echo "Kiosk mode will reopen it full-screen in a moment."
+else
+  setsid ./run_local.sh --maximized >/dev/null 2>&1 < /dev/null &
+fi
 sleep 2

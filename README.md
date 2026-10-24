@@ -218,6 +218,36 @@ details; move them Open → In progress → Resolved, add notes, and see the ful
 Optionally text the janitors (or everyone with SMS on) when saving: the result of the texts is
 added to the report's history. The tab name shows the number of open reports.
 
+## System health (Tools tab)
+
+The **System health** card at the top of Tools shows, with a coloured dot each:
+internet, Firebase, the SMS modem and signal, the SIM's load, the website import
+and SMS-reply jobs, and the Pi's temperature, free storage and memory. When
+something needs attention the tab is renamed **Tools ⚠** (checked every 2 minutes).
+
+SIM load is read with your network's balance code (USSD). Add it to
+`~/.config/aureoclean/aureoclean.env`, using the code you'd dial on a phone:
+
+    AUREOCLEAN_SIM_BALANCE_USSD=<balance code>
+    AUREOCLEAN_SIM_LOW_BALANCE=20
+
+It's checked once an hour, or right away with **Check load**.
+
+## Kiosk mode (7" screen)
+
+    ./tools/install_kiosk.sh          # once; then sudo reboot
+
+* The service (SMS, website imports, alerts) runs in the background from boot
+  and restarts itself if it crashes.
+* The app opens full-screen at boot and reopens if it closes or crashes
+  (`tools/kiosk.sh`). To close it on purpose: Tools → **Close AureoClean**.
+* After 5 minutes without a touch the screen locks. Unlock with a 4–6 digit PIN
+  (Account → **Screen-lock PIN…**), or the password if no PIN is set. Five wrong
+  tries sign the person out. **Lock** in the top bar locks it right away.
+  Change the minutes with `AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never).
+* "Update AureoClean" works as before; kiosk mode reopens the new version.
+* Undo with `./tools/install_kiosk.sh --remove`.
+
 ## Updating to a new version
 
 Double-click **Update AureoClean** on the desktop. It closes the app, installs the

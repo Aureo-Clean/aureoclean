@@ -124,6 +124,12 @@ class ApiClient:
     def test_sms(self, uid):
         return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/test-sms", timeout=SMS_TIMEOUT)
 
+    def set_lock_pin(self, password: str, pin: str):
+        return self._call("POST", "/auth/lock-pin", {"password": password, "pin": pin})
+
+    def unlock(self, secret: str):
+        return self._call("POST", "/auth/unlock", {"secret": secret})
+
     def system_health(self, check_balance: bool = False):
         return self._call("GET", "/admin/health", query={"balance": "true" if check_balance else ""},
                           timeout=SMS_TIMEOUT)

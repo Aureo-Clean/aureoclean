@@ -1,6 +1,6 @@
 """AureoClean desktop app (PySide6).
 
-Run from the project folder:  python -m desktop.app [--fullscreen]
+Run from the project folder:  python -m desktop.app [--fullscreen | --maximized | --kiosk]
 The backend must already be running (run_local.sh starts both).
 """
 from __future__ import annotations
@@ -16,7 +16,9 @@ from pathlib import Path
 os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-vulkan --disable-features=Vulkan")
 
-from PySide6.QtCore import QCoreApplication, Qt, QTimer
+import time
+
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QLineEdit, QMainWindow, QScrollArea, QStackedWidget
 
@@ -25,6 +27,7 @@ from .pages.admin import AdminDashboard
 from .pages.dashboard import DashboardPanel
 from .pages.auth import ActivatePage, AdminRegisterPage, JanitorRequestPage, LoginPage, StatusPage
 from .pages.janitor import JanitorDashboard
+from .pages.lock import LockPage
 from .theme import STYLESHEET
 from .widgets import run_async
 
@@ -37,6 +40,10 @@ class MainWindow(QMainWindow):
         self.resize(800, 480)  # the project's 7-inch display
         self.api = ApiClient()
         self.user = None
+        # Kiosk mode (tools/kiosk.sh): the window can't be closed by accident; only
+        # Tools → "Close AureoClean" quits, and anything else (a crash) is reopened.
+        self.kiosk = "--kiosk" in sys.argv
+        self.allow_close = not self.kiosk
 
         # One Arduino dashboard for the whole app, shown in both the admin and janitor screens.
         self.dashboard = DashboardPanel()
@@ -51,10 +58,16 @@ class MainWindow(QMainWindow):
             "status": StatusPage(self),
             "admin": AdminDashboard(self),
             "janitor": JanitorDashboard(self),
+            "lock": LockPage(self),
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
         self.show_login()
+        # Idle lock: any touch, click or key press counts as "in use".
+        self.last_activity = time.monotonic()
+        self._idle = QTimer(self)
+        self._idle.timeout.connect(self._check_idle)
+        self._idle.start(15_000)
         startup_error = os.environ.pop("AUREOCLEAN_STARTUP_ERROR", "").strip()
         if startup_error:
             self.pages["login"].message.error(
@@ -76,6 +89,7 @@ class MainWindow(QMainWindow):
 
     def signed_in(self, user: dict):
         self.user = user
+        self.touched()
         name = "admin" if user["role"] == "admin" else "janitor"
         self.stack.setCurrentWidget(self.pages[name])
         self.pages[name].enter(user)
@@ -85,6 +99,46 @@ class MainWindow(QMainWindow):
             self.dashboard.set_url(url)
 
         run_async(self.api.links, show, lambda e: self.dashboard.set_url(""))
+
+    def closeEvent(self, event):  # noqa: N802 (Qt name)
+        if self.allow_close:
+            event.accept()
+        else:
+            event.ignore()
+
+    def quit_app(self):
+        """Close on purpose (exit code 0 tells kiosk.sh not to reopen it)."""
+        self.allow_close = True
+        QApplication.instance().exit(0)
+
+    # ------------------------------------------------------------ idle lock
+    def touched(self):
+        self.last_activity = time.monotonic()
+
+    def _check_idle(self):
+        minutes = int((self.user or {}).get("idleLockMinutes") or 0)
+        if not (self.user and minutes and self.api.token):
+            return
+        if self.stack.currentWidget() is self.pages["lock"]:
+            return
+        if time.monotonic() - self.last_activity >= minutes * 60:
+            self.lock_screen(minutes)
+
+    def lock_screen(self, minutes: int = 0):
+        if not self.user:
+            return
+        for _ in range(5):  # close any open pop-up so it isn't left above the lock screen
+            modal = QApplication.activeModalWidget()
+            if modal is None:
+                break
+            modal.close()
+        back = self.stack.currentWidget()
+        self.stack.setCurrentWidget(self.pages["lock"])
+        self.pages["lock"].lock(back, self.user, minutes)
+
+    def unlocked(self, back_to):
+        self.touched()
+        self.stack.setCurrentWidget(back_to or self.pages["admin" if self.user["role"] == "admin" else "janitor"])
 
     def logout(self):
         # The dashboard stays loaded (and signed in to Arduino) for the next person.
@@ -120,6 +174,21 @@ def keep_focus_visible(old, new):
         parent = parent.parentWidget()
 
 
+class ActivityFilter(QObject):
+    """Sees every input event in the app (including the embedded dashboard)."""
+
+    KINDS = {QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.TouchBegin, QEvent.Wheel, QEvent.TabletPress}
+
+    def __init__(self, window):
+        super().__init__()
+        self.window = window
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt name)
+        if event.type() in self.KINDS:
+            self.window.touched()
+        return False
+
+
 def main() -> int:
     # Needed by the embedded dashboard (Qt WebEngine); must be set before the app starts.
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
@@ -130,7 +199,9 @@ def main() -> int:
     app.setStyleSheet(STYLESHEET)
     app.focusChanged.connect(keep_focus_visible)
     window = MainWindow()
-    if "--fullscreen" in sys.argv:
+    activity = ActivityFilter(window)
+    app.installEventFilter(activity)
+    if "--fullscreen" in sys.argv or window.kiosk:
         window.showFullScreen()
     elif "--maximized" in sys.argv:
         window.showMaximized()

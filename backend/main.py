@@ -55,6 +55,15 @@ class ChangePasswordBody(BaseModel):
     newPassword: str = Field(max_length=128)
 
 
+class LockPinBody(BaseModel):
+    password: str = Field(default="", max_length=200)
+    pin: str = Field(default="", max_length=12)
+
+
+class UnlockBody(BaseModel):
+    secret: str = Field(default="", max_length=200)
+
+
 class RejectBody(BaseModel):
     reason: str = Field(default="", max_length=200)
 
@@ -194,6 +203,14 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def change_password(body: ChangePasswordBody, session: Session = Depends(any_user)):
         svc().change_password(session, body.currentPassword, body.newPassword)
         return {"ok": True, "message": "Password changed."}
+
+    @app.post("/auth/lock-pin")
+    def lock_pin(body: LockPinBody, session: Session = Depends(any_user)):
+        return svc().set_lock_pin(session, body.password, body.pin)
+
+    @app.post("/auth/unlock")
+    def unlock(body: UnlockBody, session: Session = Depends(any_user)):
+        return svc().unlock(session, body.secret)
 
     @app.get("/links")
     def links(session: Session = Depends(any_user)):

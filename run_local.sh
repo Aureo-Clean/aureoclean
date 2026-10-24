@@ -20,6 +20,18 @@ urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"http://127.0
 EOF
 }
 
+# Kiosk mode: the service runs under systemd (tools/install_kiosk.sh). Wait for it
+# instead of starting a second copy.
+UNIT=aureoclean-backend.service
+if ! health && systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null; then
+  echo "Waiting for the AureoClean service…"
+  systemctl --user start "$UNIT" 2>/dev/null
+  for _ in $(seq 1 60); do
+    if health; then break; fi
+    sleep 0.5
+  done
+fi
+
 BACKEND_PID=""
 if health; then
   echo "AureoClean service already running on port $PORT."

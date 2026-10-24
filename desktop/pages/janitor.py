@@ -7,7 +7,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QTabWidget, QVBoxLayout, QWidget
 
 from ..widgets import button, card, fmt_time, label, run_async, scroll_page
-from .common import SmsCard, TopBar, change_password_button
+from .common import SmsCard, TopBar, change_password_button, lock_pin_button
 
 TAB_DASHBOARD, TAB_ALERTS, TAB_PROFILE = 0, 1, 2
 
@@ -20,7 +20,7 @@ class JanitorDashboard(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.topbar = TopBar("AureoClean", nav.logout)
+        self.topbar = TopBar("AureoClean", nav.logout, on_lock=lambda: nav.lock_screen())
         root.addWidget(self.topbar)
 
         self.tabs = QTabWidget()
@@ -74,6 +74,7 @@ class JanitorDashboard(QWidget):
         ib.addLayout(details)
         ib.addSpacing(4)
         ib.addWidget(change_password_button(self.api, self))
+        ib.addWidget(lock_pin_button(self.api, self, self.nav))
         ib.addStretch(1)
 
         self.sms = SmsCard(self.api, "Restroom alerts by text, even away from this screen.")

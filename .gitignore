@@ -10,3 +10,4 @@ service-account*.json
 *-firebase-adminsdk-*.json
 logs/
 exports/
+.updating

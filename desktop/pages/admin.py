@@ -2,6 +2,7 @@
 Laid out for the 7-inch 800x480 display (no stat tiles; counts live in the tab names)."""
 from __future__ import annotations
 
+import sys
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -36,7 +37,7 @@ from ..widgets import (
 )
 from .charts import ReportsDashboard
 from .health import HealthCard
-from .common import LinkButton, SmsCard, TopBar, change_password_button
+from .common import LinkButton, SmsCard, TopBar, change_password_button, lock_pin_button
 
 ACTION_LABELS = {
     "login": "Signed in",
@@ -594,7 +595,18 @@ class ToolsTab(_Tab):
         self.grid = QGridLayout()
         self.grid.setSpacing(8)
         self.layout_.addLayout(self.grid)
+
+        # Kiosk mode only: the one way to close the full-screen app on purpose.
+        self.quit_btn = button("Close AureoClean (leave kiosk mode)", "Danger", self.quit_kiosk)
+        self.quit_btn.setVisible("--kiosk" in sys.argv)
+        self.layout_.addWidget(self.quit_btn, 0, Qt.AlignLeft)
         self.layout_.addStretch(1)
+
+    def quit_kiosk(self):
+        if _confirm(self, "Close AureoClean", "Close the app? It stays closed until the Pi restarts or you "
+                    "open AureoClean from the desktop icon. Alerts and SMS keep running in the background "
+                    "if the AureoClean service is installed."):
+            self.window().quit_app()
 
     def _busy(self, on: bool, text: str = "") -> None:
         for b in (self.detect_btn, self.check_btn, self.testmode_btn, self.send_btn):
@@ -811,7 +823,7 @@ class AdminDashboard(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.topbar = TopBar("AureoClean · Admin", nav.logout)
+        self.topbar = TopBar("AureoClean · Admin", nav.logout, on_lock=lambda: nav.lock_screen())
         root.addWidget(self.topbar)
 
         self.tabs = QTabWidget()
@@ -840,6 +852,7 @@ class AdminDashboard(QWidget):
         self.account_info = label("", "Muted")
         ib.addWidget(self.account_info)
         ib.addWidget(change_password_button(self.api, self))
+        ib.addWidget(lock_pin_button(self.api, self, self.nav))
         ib.addStretch(1)
         self.sms = SmsCard(self.api, "Critical alerts (fire, emergency stop) and system notices by text.",
                            on_open_tools=lambda: self.tabs.setCurrentIndex(TAB_TOOLS))

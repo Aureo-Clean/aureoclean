@@ -18,6 +18,7 @@ Accounts and roles
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
 import threading
@@ -218,11 +219,20 @@ def _check(value, validator):
         raise BadRequest(str(exc)) from exc
 
 
+def idle_lock_minutes() -> int:
+    """Minutes without a touch before the desktop screen locks (0 = never)."""
+    try:
+        return max(0, min(int(os.environ.get("AUREOCLEAN_IDLE_LOCK_MINUTES", "5")), 240))
+    except ValueError:
+        return 5
+
+
 def _public_profile(profile: dict) -> dict:
     keys = ("uid", "username", "fullName", "email", "role", "status", "createdAt", "lastLoginAt",
             "smsPhone", "smsAlerts", "smsVerifiedAt")
     out = {k: profile.get(k) for k in keys}
     out["smsAlerts"] = bool(out["smsAlerts"])
+    out["hasLockPin"] = bool(profile.get("lockPinHash"))
     pending = profile.get("smsPending") or {}
     out["smsPendingPhone"] = pending.get("phone") if not _expired(pending.get("expiresAt")) else None
     return out
@@ -267,6 +277,7 @@ class AureoService:
         self.job_status: dict[str, dict] = {}  # background jobs: last run + error (for the health panel)
         # SMS verification codes: at most 3 texts per user per 15 minutes.
         self.sms_sends = FailureTracker(3, 15)
+        self.unlock_failures = FailureTracker(5, 15)  # idle-lock screen: 5 wrong tries ends the session
 
     # ============================================================ audit
     def audit(self, action: str, actor: dict, target: Optional[str] = None, details: Optional[dict] = None):
@@ -567,7 +578,8 @@ class AureoService:
         self.store.set(self.C_USERS, uid, profile)
         session = self.sessions.create(profile)
         self.audit("login", session.actor, uid)
-        return {"token": session.token, "expiresAt": iso(session.expires_at), "user": _public_profile(profile)}
+        return {"token": session.token, "expiresAt": iso(session.expires_at),
+                "user": {**_public_profile(profile), "idleLockMinutes": idle_lock_minutes()}}
 
     def _check_credentials(self, ident: str, password: str, key: str) -> tuple[str, str]:
         """Resolve a username or email and check the password. Returns (email, uid)."""
@@ -641,7 +653,7 @@ class AureoService:
             self.sessions.revoke(session.token)
             raise Unauthorized("Your account is no longer active.")
         # Tell the screen whether texts are really sent (modem) or only logged (test mode).
-        return {**_public_profile(profile), "smsMode": self.sms.mode}
+        return {**_public_profile(profile), "smsMode": self.sms.mode, "idleLockMinutes": idle_lock_minutes()}
 
     def change_password(self, session: Session, current: str, new: str) -> None:
         new = _check(new, validate_password)
@@ -655,6 +667,53 @@ class AureoService:
             raise Unauthorized("Your current password is incorrect.")
         self.identity.set_password(session.uid, new)
         self.audit("password_changed", session.actor, session.uid)
+
+    # ============================================================ screen lock (kiosk)
+    def set_lock_pin(self, session: Session, password: str, pin: str) -> dict:
+        """A 4-6 digit PIN unlocks the idle screen; the account password is needed to set or remove it."""
+        pin = (pin or "").strip()
+        if pin and not re.fullmatch(r"\d{4,6}", pin):
+            raise BadRequest("The PIN must be 4 to 6 digits.")
+        if pin and (len(set(pin)) == 1 or pin in ("1234", "12345", "123456", "4321", "654321")):
+            raise BadRequest("That PIN is too easy to guess. Pick another one.")
+        try:
+            ok = self.identity.verify_password(session.email, password or "")
+        except AccountDisabled:
+            raise Forbidden("This account has been disabled.")
+        if ok != session.uid:
+            raise Unauthorized("Your password is incorrect.")
+        self.store.transact(self.C_USERS, session.uid,
+                            lambda u: {**u, "lockPinHash": hash_secret(pin) if pin else None})
+        self.audit("lock_pin_set" if pin else "lock_pin_removed", session.actor, session.uid)
+        return {"hasLockPin": bool(pin)}
+
+    def unlock(self, session: Session, secret: str) -> dict:
+        """Unlock the idle screen with the PIN (or the password when no PIN is set).
+        Too many wrong tries signs the session out, so a full sign-in is needed."""
+        key = f"unlock:{session.uid}"
+        profile = self.store.get(self.C_USERS, session.uid) or {}
+        if profile.get("status") != "active":
+            self.sessions.revoke(session.token)
+            raise Unauthorized("Your account is no longer active.")
+        secret = secret or ""
+        pin_hash = profile.get("lockPinHash")
+        if pin_hash:
+            ok = verify_secret(secret, pin_hash)
+        else:
+            try:
+                ok = bool(secret) and self.identity.verify_password(session.email, secret) == session.uid
+            except AccountDisabled:
+                ok = False
+        if ok:
+            self.unlock_failures.reset(key)
+            return {"ok": True}
+        self.unlock_failures.record_failure(key)
+        if self.unlock_failures.locked_for(key):
+            self.unlock_failures.reset(key)
+            self.sessions.revoke(session.token)
+            self.audit("unlock_locked_out", session.actor, session.uid)
+            raise Unauthorized("Too many wrong tries. You've been signed out — sign in with your password.")
+        raise BadRequest("Wrong PIN." if pin_hash else "Wrong password.")
 
     # ============================================================ admin invites
     def create_admin_invite(self, admin: Session, email: str = "", hours: Optional[int] = None) -> dict:
