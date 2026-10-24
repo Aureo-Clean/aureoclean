@@ -65,6 +65,14 @@
       }, function () { return { ok: false, status: 0, text: "offline" }; });
   }
 
+  function reason(r) {
+    try {
+      var e = JSON.parse(r.text);
+      e = (e[0] || e).error || {};
+      return e.message ? " (Details: " + String(e.message).slice(0, 160) + ")" : "";
+    } catch (x) { return ""; }
+  }
+
   window.Aureo = { cfg: cfg, randomId: randomId, deviceId: deviceId, store: store, v: v,
-                   createDoc: createDoc, normalizePhone: normalizePhone, prettyPhone: prettyPhone };
+                   createDoc: createDoc, reason: reason, normalizePhone: normalizePhone, prettyPhone: prettyPhone };
 })();

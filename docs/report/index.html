@@ -229,7 +229,7 @@
       if (r.ok) return done();
       if (r.status === 0) return showError("No internet connection. Check your data or Wi-Fi and try again.");
       if (r.status === 429) return showError("Too many reports right now. Please try again in a minute.");
-      showError("Couldn't send the report (error " + r.status + "). Please try again.");
+      showError("Couldn't send the report (error " + r.status + "). Please try again." + A.reason(r));
     });
   }
 

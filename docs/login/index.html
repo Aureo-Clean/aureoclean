@@ -116,17 +116,19 @@
     if (email) fields.email = A.v.str(email);
 
     btn.disabled = true; btn.textContent = "Sending…";
+    A.store.set("aureoclean.signupTried", "1");
     A.createDoc("aureoWebSignups", device, fields).then(function (r) {
       btn.disabled = false; btn.textContent = "Send sign-up request";
       if (r.ok) return done();
       // The sign-up's ID is this device's ID: a second one is refused by the database.
-      if (r.status === 403 || r.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(r.text)) {
+      if (r.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(r.text) ||
+          (r.status === 403 && A.store.get("aureoclean.signupTried"))) {
         A.store.set("aureoclean.signedUp", "1");
         return show("used-card");
       }
       if (r.status === 0) return showError("No internet connection. Check your data or Wi-Fi and try again.");
       if (r.status === 429) return showError("Too many requests right now. Please try again in a minute.");
-      showError("Couldn't send your request (error " + r.status + "). Please try again.");
+      showError("Couldn't send your request (error " + r.status + "). Please try again." + A.reason(r));
     });
   });
 })();
