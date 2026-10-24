@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 # The Raspberry Pi 4's graphics driver has no Vulkan support. Tell Qt and the
 # embedded dashboard browser to use OpenGL straight away, which avoids the
@@ -25,7 +26,7 @@ from .pages.dashboard import DashboardPanel
 from .pages.auth import ActivatePage, AdminRegisterPage, JanitorRequestPage, LoginPage, StatusPage
 from .pages.janitor import JanitorDashboard
 from .theme import STYLESHEET
-from .widgets import logo_path, run_async
+from .widgets import run_async
 
 
 class MainWindow(QMainWindow):
@@ -125,7 +126,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("AureoClean")
     app.setDesktopFileName("aureoclean")
-    app.setWindowIcon(QIcon(str(logo_path("icon"))))
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "icon-256.png")))
     app.setStyleSheet(STYLESHEET)
     app.focusChanged.connect(keep_focus_visible)
     window = MainWindow()

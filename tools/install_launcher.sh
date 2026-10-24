@@ -25,17 +25,13 @@ if [ ! -x "$APP_DIR/.venv/bin/python" ]; then
   exit 1
 fi
 
-# A personal logo kept only on this Pi (~/.config/aureoclean/logo.png) replaces the icon.
-ICON="$APP_DIR/desktop/assets/icon-256.png"
-[ -f "$HOME/.config/aureoclean/logo.png" ] && ICON="$HOME/.config/aureoclean/logo.png"
-
 ENTRY="[Desktop Entry]
 Type=Application
 Name=AureoClean
 Comment=Restroom hygiene monitoring
 Exec=\"$APP_DIR/run_local.sh\" --maximized
 Path=$APP_DIR
-Icon=$ICON
+Icon=$APP_DIR/desktop/assets/icon-256.png
 Terminal=false
 Categories=Utility;
 StartupNotify=true
