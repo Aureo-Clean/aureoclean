@@ -56,6 +56,7 @@ from .security import (
     validate_username,
     verify_secret,
 )
+from .two_way import alert_text
 from .sms import (
     LogSender,
     ModemSender,
@@ -253,11 +254,14 @@ class AureoService:
         self.C_WEB_SIGNUPS = f"{prefix}WebSignups"   # written by the public sign-up website (create-only)
         self.C_REPORTS = f"{prefix}Reports"
         self.C_PUBLIC_REPORTS = f"{prefix}PublicReports"  # written by the public report page (create-only)
+        self.C_COUNTERS = f"{prefix}Counters"
         self.C_SESSIONS = f"{prefix}Sessions"
         self.sessions = SessionManager(settings.session_hours, store, self.C_SESSIONS)
         self.login_failures = FailureTracker(settings.max_login_failures, settings.login_lockout_minutes)
         # Guessing activation / invite codes: 10 wrong tries per key per 15 min.
         self.code_failures = FailureTracker(10, 15)
+        from .two_way import TwoWaySms
+        self.two_way = TwoWaySms(self)
         # SMS verification codes: at most 3 texts per user per 15 minutes.
         self.sms_sends = FailureTracker(3, 15)
 
@@ -1043,6 +1047,12 @@ class AureoService:
         where = "written to logs/sms_outbox.log (test mode)" if self.sms.mode == "log" else f"sent to {phone}"
         return {"message": f"Test SMS {where}."}
 
+    def simulate_sms_reply(self, admin: Session, phone: str, text: str) -> dict:
+        """Handle a reply as if it had arrived by SMS (for testing and demos)."""
+        result = self.two_way.handle(phone, text)
+        self.audit("sms_reply_simulated", admin.actor, None, {"text": (text or "")[:40], "result": result["action"]})
+        return result
+
     def sms_status(self) -> dict:
         try:
             return self.sms.check()
@@ -1192,9 +1202,7 @@ class AureoService:
                 notify = "everyone" if category == "emergency" else ("janitors" if urgency == "high" else "none")
                 if notify != "none":
                     label = "EMERGENCY" if category == "emergency" else "URGENT"
-                    text = f"AureoClean {label}: {report['title']} at {report['location']}"
-                    if report["details"]:
-                        text += f". {report['details']}"
+                    text = alert_text(label, report["smsRef"], report["title"], report["location"], report["details"])
                     self._notify_async(report["id"], self.sms_recipients(None if notify == "everyone" else ROLE_JANITOR), text)
             finally:
                 self.store.delete(self.C_PUBLIC_REPORTS, doc_id)
@@ -1261,13 +1269,20 @@ class AureoService:
         sent = 0
         if notify != "none":
             recipients = self.sms_recipients(None if notify == "everyone" else ROLE_JANITOR)
-            label = "EMERGENCY" if category == "emergency" else self.REPORT_CATEGORIES[category]
-            text = f"AureoClean {label}: {title}" + (f" at {location}" if location else "") + (
-                f". {details}" if details else "")
+            label = "EMERGENCY" if category == "emergency" else self.REPORT_CATEGORIES[category].upper()
+            text = alert_text(label, report["smsRef"], title, location, details)
             self._notify_async(report_id, recipients, text)
             sent = len(recipients)
         return {"id": report_id, **report, "notifying": sent,
                 "message": "Report saved." + (f" Texting {sent} people…" if sent else "")}
+
+    def _next_report_ref(self) -> int:
+        """Short, increasing report number (#1, #2, …) used in SMS replies."""
+        def bump(current):
+            current = current or {"next": 1}
+            current["next"] = int(current.get("next", 1)) + 1
+            return current
+        return int(self.store.transact(self.C_COUNTERS, "reportRef", bump)["next"]) - 1
 
     def _save_report(self, category, title, location, details, priority, created_by, extra=None) -> dict:
         report_id = generate_id()
@@ -1275,12 +1290,23 @@ class AureoService:
         report = {
             "category": category, "title": title, "location": location, "details": details, "priority": priority,
             "status": "open", "createdAt": now, "updatedAt": now, "createdBy": created_by, "notes": [],
+            "smsRef": self._next_report_ref(),
             **(extra or {}),
         }
         self.store.create(self.C_REPORTS, report_id, report)
         return {"id": report_id, **report}
 
     def _notify_async(self, report_id: str, recipients: list[dict], text: str) -> None:
+        if recipients:
+            # Remember who was texted and when: needed for replies without a number and for escalation.
+            def mark(current):
+                if current is None:
+                    return None
+                current["notifiedAt"] = current.get("notifiedAt") or iso(utcnow())
+                current["notifiedTo"] = sorted(set(current.get("notifiedTo") or []) | {r["uid"] for r in recipients})
+                return current
+            self.store.transact(self.C_REPORTS, report_id, mark)
+
         def work():
             ok, failed = 0, []
             for r in recipients:

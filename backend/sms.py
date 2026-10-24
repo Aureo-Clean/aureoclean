@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 import os
 import re
 import threading
@@ -78,6 +79,38 @@ class SmsSender(Protocol):
 
     def check(self) -> dict: ...
 
+    def read_inbox(self) -> list["Incoming"]:
+        """Texts received since the last call (they are removed from the SIM)."""
+
+
+@dataclass
+class Incoming:
+    sender: str
+    text: str
+    received: str = ""
+
+
+_CMGL = re.compile(r'\+CMGL:\s*(\d+),"[^"]*","([^"]*)"[^\r\n]*\r?\n(.*?)(?=\r?\n\+CMGL:|\r?\n\r?\nOK|\r?\nOK\s*$)',
+                   re.S)
+
+
+def parse_cmgl(reply: str) -> list[tuple[int, str, str]]:
+    """Parse AT+CMGL output into (index, sender, text)."""
+    out = []
+    for m in _CMGL.finditer(reply):
+        out.append((int(m.group(1)), m.group(2), _decode_text(m.group(3).strip())))
+    return out
+
+
+def _decode_text(text: str) -> str:
+    # Phones send texts with emoji/accents as UCS-2, which text mode shows as hex.
+    if len(text) >= 4 and len(text) % 4 == 0 and re.fullmatch(r"[0-9A-Fa-f]+", text) and not text.isdigit():
+        try:
+            return bytes.fromhex(text).decode("utf-16-be")
+        except (ValueError, UnicodeDecodeError):
+            return text
+    return text
+
 
 # ---------------------------------------------------------------- test mode
 class LogSender:
@@ -85,6 +118,15 @@ class LogSender:
 
     def __init__(self, outbox: Path):
         self.outbox = outbox
+        self._inbox: list[Incoming] = []
+
+    def inject(self, sender: str, text: str) -> None:
+        """Pretend a text arrived (test mode / demos)."""
+        self._inbox.append(Incoming(sender, text, time.strftime("%Y-%m-%d %H:%M:%S")))
+
+    def read_inbox(self) -> list[Incoming]:
+        items, self._inbox = self._inbox, []
+        return items
 
     def send(self, to: str, text: str) -> None:
         text = gsm_text(text)
@@ -195,6 +237,25 @@ class ModemSender:
                 log.info("SMS sent to %s", mask_phone(to))
             finally:
                 ser.close()
+
+    def read_inbox(self) -> list[Incoming]:
+        """Read every text on the SIM, then delete them so the SIM never fills up."""
+        with MODEM_LOCK:
+            ser = self._open()
+            try:
+                self._prepare(ser)
+                reply = self._cmd(ser, 'AT+CMGL="ALL"', timeout=8)
+                messages = parse_cmgl(reply)
+                for index, _, _ in messages:
+                    try:
+                        self._cmd(ser, f"AT+CMGD={index}", timeout=5)
+                    except SmsError:
+                        log.warning("Couldn't delete SMS %s from the SIM", index)
+            finally:
+                ser.close()
+        if messages:
+            log.info("Received %d SMS", len(messages))
+        return [Incoming(sender, text) for _, sender, text in messages]
 
     def check(self) -> dict:
         with MODEM_LOCK:

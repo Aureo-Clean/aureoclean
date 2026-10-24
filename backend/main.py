@@ -68,6 +68,11 @@ class UserStatusBody(BaseModel):
     active: bool
 
 
+class SimulateSmsBody(BaseModel):
+    phone: str = Field(max_length=24)
+    text: str = Field(max_length=160)
+
+
 class DeleteUserBody(BaseModel):
     confirmUsername: str = Field(max_length=40)
 
@@ -264,6 +269,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def sms_test_mode(session: Session = Depends(admin)):
         return svc().use_test_mode(session)
 
+    @app.post("/admin/sms/simulate-reply")
+    def sms_simulate(body: SimulateSmsBody, session: Session = Depends(admin)):
+        return svc().simulate_sms_reply(session, body.phone, body.text)
+
     @app.post("/admin/sms/test")
     def sms_test_to(body: PhoneBody, session: Session = Depends(admin)):
         return svc().send_test_sms_to(session, body.phone)
@@ -332,8 +341,21 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
     import threading
     import time
 
+    state = {"tick": 0}
+
     def loop():
         while True:
+            state["tick"] += 1
+            # Replies to alerts (OK 12 / DONE 12): every 20 s. Escalations: every minute.
+            try:
+                service.two_way.poll()
+            except Exception:  # noqa: BLE001
+                log.warning("Reading SMS replies failed; will retry", exc_info=True)
+            if state["tick"] % 3 == 0:
+                try:
+                    service.two_way.check_escalations()
+                except Exception:  # noqa: BLE001
+                    log.warning("Escalation check failed; will retry", exc_info=True)
             for name, job in (("sign-up", service.import_web_signups), ("report", service.import_public_reports)):
                 try:
                     n = job()

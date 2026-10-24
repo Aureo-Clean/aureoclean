@@ -50,6 +50,10 @@ ACTION_LABELS = {
     "user_enabled": "User enabled",
     "user_disabled": "User disabled",
     "user_deleted": "Account deleted",
+    "sms_reply_received": "SMS reply received",
+    "sms_reply_simulated": "SMS reply simulated",
+    "sms_from_unknown": "SMS from unknown number",
+    "report_escalated": "Report escalated (no reply)",
     "password_changed": "Password changed",
     "sms_code_sent": "SMS verification code sent",
     "sms_phone_verified": "Mobile number verified",
@@ -312,7 +316,7 @@ class ReportsTab(_Tab):
         bar.addWidget(button("+ New report", "Gold", self.new_report))
         self.layout_.addLayout(bar)
 
-        self.table = make_table(["Priority", "Type", "What", "Where", "From", "Status", "Reported"])
+        self.table = make_table(["#", "Priority", "Type", "What", "Where", "From", "Status", "Taken by", "Reported"])
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.table.itemDoubleClicked.connect(lambda *_: self.details())
         self.layout_.addWidget(self.table, 1)
@@ -346,8 +350,10 @@ class ReportsTab(_Tab):
                 st.setText(STATUS_LABELS[r["status"]])
                 origin = {"qr": "QR code", "web": "Report page"}.get(r.get("channel"), "Admin") \
                     if r.get("source") == "public" else "Admin"
-                data.append([pri, TYPE_LABELS.get(r["category"], r["category"]), r["title"], r.get("location") or "—",
-                             origin, st, fmt_time(r.get("createdAt"))])
+                taken = (r.get("assignedTo") or {}).get("name") or ("not answered" if r.get("escalatedAt") else "—")
+                data.append([f"#{r['smsRef']}" if r.get("smsRef") else "", pri,
+                             TYPE_LABELS.get(r["category"], r["category"]), r["title"], r.get("location") or "—",
+                             origin, st, taken, fmt_time(r.get("createdAt"))])
             fill_table(self.table, data, rows)
             if rows:
                 self.message.clear()
@@ -407,6 +413,8 @@ class ReportsTab(_Tab):
             if r.get("contact"):
                 c = r["contact"]
                 lines.append(f"Contact: {c.get('name') or '—'} {c.get('phone') or ''}".rstrip())
+        if r.get("assignedTo"):
+            lines.append(f"Taken by {r['assignedTo'].get('name')} {fmt_time(r.get('acceptedAt'))}")
         if r.get("details"):
             lines += ["", r["details"]]
         if r.get("notes"):
@@ -414,7 +422,7 @@ class ReportsTab(_Tab):
                                          for n in r["notes"]]
         box = QMessageBox(self)
         box.setWindowTitle("Report")
-        box.setText(r["title"])
+        box.setText((f"#{r['smsRef']}  " if r.get("smsRef") else "") + r["title"])
         box.setInformativeText("\n".join(lines))
         box.exec()
 
@@ -556,6 +564,19 @@ class ToolsTab(_Tab):
         send_row.addWidget(self.send_btn, 0, Qt.AlignBottom)
         body.addLayout(send_row)
         self.test_number.edit.returnPressed.connect(self.send_btn.click)
+
+        # Pretend a janitor replied (OK 12 / DONE 12): handy for testing and demos.
+        sim_row = QHBoxLayout()
+        sim_row.setSpacing(6)
+        self.sim_from = Field("Try a reply: from number", "0917 123 4567")
+        self.sim_text = Field("Text", "OK 12")
+        sim_row.addWidget(self.sim_from, 3)
+        sim_row.addWidget(self.sim_text, 2)
+        self.sim_btn = button("Try reply", on_click=self.simulate)
+        sim_row.addWidget(self.sim_btn, 0, Qt.AlignBottom)
+        body.addLayout(sim_row)
+        body.addWidget(label("Janitors reply OK <number> to take a job and DONE <number> when it's finished. "
+                             "Real replies are read from the SIM every 20 seconds.", "Muted"))
         self.layout_.addWidget(sms)
         self.layout_.addWidget(self.message)
 
@@ -629,6 +650,22 @@ class ToolsTab(_Tab):
                 self._show_settings(st["settings"])
 
         run_async(self.api.sms_status, ok, self.fail, lambda: self._busy(False))
+
+    def simulate(self):
+        self.message.clear()
+        phone, text = self.sim_from.value(), self.sim_text.value()
+        if not phone or not text:
+            self.message.error("Type the janitor's number and a reply, e.g. OK 12.")
+            return
+        labels = {"accepted": "accepted the job", "done": "marked it done", "taken": "was told it's already taken",
+                  "already_done": "was told it's already done", "not_found": "was told that report isn't open",
+                  "help": "got the how-to-reply text", "ignored": "was ignored"}
+
+        def ok(r):
+            extra = f" (#{r['ref']})" if r.get("ref") else (f": {r['reason']}" if r.get("reason") else "")
+            self.message.success(f"Result: the sender {labels.get(r['action'], r['action'])}{extra}.")
+
+        run_async(lambda: self.api.sms_simulate_reply(phone, text), ok, self.fail)
 
     def send_test(self):
         self.message.clear()

@@ -21,6 +21,7 @@ service cloud.firestore {
     match /aureoAuditLogs/{doc=**}             { allow read, write: if false; }
     match /aureoSessions/{doc=**}              { allow read, write: if false; }
     match /aureoReports/{doc=**}               { allow read, write: if false; }
+    match /aureoCounters/{doc=**}              { allow read, write: if false; }
 
     function optionalString(data, key, maxLen) {
       return !(key in data) || (data[key] is string && data[key].size() <= maxLen);

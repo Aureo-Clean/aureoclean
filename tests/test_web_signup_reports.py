@@ -94,14 +94,15 @@ class PublicReports(Base):
         self.svc.import_public_reports()
         r = self.svc.list_reports()[0]
         self.assertEqual((r["category"], r["priority"]), ("emergency", "critical"))
-        self.assertIn("EMERGENCY: Emergency, Wet or slippery floor at 2nd Floor · Male", self.fake.sent[0][1])
+        self.assertIn("EMERGENCY #1: Emergency, Wet or slippery floor at 2nd Floor - Male", self.fake.sent[0][1])
         self.assertIn("SMS sent to", self.svc.list_reports()[0]["notes"][-1]["text"])
 
     def test_urgent_texts_janitors(self):
         self.public(issues=["clogged_toilet"], urgency="high")
         self.svc.import_public_reports()
         self.assertEqual(self.svc.list_reports()[0]["category"], "facility")
-        self.assertIn("URGENT: Clogged toilet", self.fake.sent[0][1])
+        self.assertIn("URGENT #1: Clogged toilet", self.fake.sent[0][1])
+        self.assertTrue(self.fake.sent[0][1].endswith("Reply OK 1 or DONE 1"))
 
     def test_spam_from_one_device_is_dropped_but_emergencies_get_through(self):
         for _ in range(8):
@@ -149,7 +150,7 @@ class Reports(Base):
         r = self.svc.create_report(self.admin, "emergency", "Fire alarm", "2F Male CR", "Smoke seen", notify="janitors")
         self.assertEqual((r["priority"], r["status"], r["notifying"]), ("critical", "open", 1))
         self.assertEqual(self.fake.sent[0][0], "+639171234567")
-        self.assertIn("EMERGENCY: Fire alarm at 2F Male CR", self.fake.sent[0][1])
+        self.assertIn("EMERGENCY #1: Fire alarm at 2F Male CR. Smoke seen. Reply OK 1 or DONE 1", self.fake.sent[0][1])
         report = self.svc.list_reports()[0]
         self.assertIn("SMS sent to 1 of 1", report["notes"][-1]["text"])
 

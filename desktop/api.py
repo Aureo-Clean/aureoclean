@@ -133,6 +133,9 @@ class ApiClient:
     def sms_test_mode(self):
         return self._call("POST", "/admin/sms/test-mode")
 
+    def sms_simulate_reply(self, phone: str, text: str):
+        return self._call("POST", "/admin/sms/simulate-reply", {"phone": phone, "text": text}, timeout=SMS_TIMEOUT)
+
     def sms_test_to(self, phone: str):
         return self._call("POST", "/admin/sms/test", {"phone": phone}, timeout=SMS_TIMEOUT)
 
