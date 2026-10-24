@@ -24,6 +24,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -224,6 +225,17 @@ def _check(value, validator):
         raise BadRequest(str(exc)) from exc
 
 
+def public_locations() -> list[dict]:
+    """The restroom list from docs/assets/config.js (the file the QR codes and report page use)."""
+    path = Path(__file__).resolve().parent.parent / "docs" / "assets" / "config.js"
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    return [{"code": c, "name": n} for c, n in
+            re.findall(r'\{\s*code:\s*"([^"]+)",\s*name:\s*"([^"]+)"\s*\}', text)]
+
+
 def idle_lock_minutes() -> int:
     """Minutes without a touch before the desktop screen locks (0 = never)."""
     try:
@@ -238,6 +250,7 @@ def _public_profile(profile: dict) -> dict:
     out = {k: profile.get(k) for k in keys}
     out["smsAlerts"] = bool(out["smsAlerts"])
     out["hasLockPin"] = bool(profile.get("lockPinHash"))
+    out["smsOnly"] = bool(profile.get("smsOnly"))
     pending = profile.get("smsPending") or {}
     out["smsPendingPhone"] = pending.get("phone") if not _expired(pending.get("expiresAt")) else None
     return out
@@ -1152,7 +1165,7 @@ class AureoService:
             return False
         when = "has ended" if days < 0 else "ends today" if days == 0 else "ends tomorrow"
         text = (f"AureoClean: the SIM promo ({promo['name']}) {when}. Register again so alerts keep going out, "
-                "then update it in Tools > SMS.")
+                "then update it in System > SMS.")
         sent = 0
         for admin in self.sms_recipients(ROLE_ADMIN):
             try:
@@ -1574,6 +1587,127 @@ class AureoService:
             "smsSubscribers": len(self.sms_recipients()),
             "openReports": sum(r.get("status") != "resolved" for _, r in self.store.query(self.C_REPORTS)),
         }
+
+    # ============================================================ janitor jobs
+    def _job(self, report_id: str, r: dict, me: str) -> dict:
+        holder = r.get("assignedTo") or {}
+        done_by = r.get("resolvedBy") or {}
+        return {
+            "id": report_id, "ref": r.get("smsRef"), "title": r.get("title", ""), "location": r.get("location", ""),
+            "category": r.get("category"), "priority": r.get("priority"), "status": r.get("status"),
+            "details": (r.get("details") or "")[:300], "createdAt": r.get("reportedAt") or r.get("createdAt"),
+            "takenBy": holder.get("name") or holder.get("username"), "mine": holder.get("uid") == me,
+            "doneBy": done_by.get("name") or done_by.get("username"), "resolvedAt": r.get("resolvedAt"),
+        }
+
+    def janitor_jobs(self, session: Session) -> dict:
+        """The janitor's simple report view: open jobs, my jobs, and what was fixed today."""
+        start_of_day = datetime.now(PH_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = iso(start_of_day.astimezone(timezone.utc))
+        order = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+        open_, mine, taken, done = [], [], [], []
+        for report_id, r in self.store.query(self.C_REPORTS):
+            job = self._job(report_id, r, session.uid)
+            if r.get("status") == "resolved":
+                if (r.get("resolvedAt") or "") >= today:
+                    done.append(job)
+            elif job["mine"]:
+                mine.append(job)
+            elif r.get("assignedTo"):
+                taken.append(job)
+            else:
+                open_.append(job)
+        def urgent_first(rows):
+            rows.sort(key=lambda j: j["createdAt"] or "", reverse=True)
+            rows.sort(key=lambda j: order.get(j["priority"], 9))
+            return rows
+        done.sort(key=lambda j: j["resolvedAt"] or "", reverse=True)
+        return {"open": urgent_first(open_), "mine": urgent_first(mine), "taken": urgent_first(taken), "done": done}
+
+    def _janitor_name(self, session: Session) -> str:
+        return (session.full_name or session.username).split()[0]
+
+    def janitor_take(self, session: Session, report_id: str) -> dict:
+        """'I'll take it' in the app: the same as texting OK <number>."""
+        name = self._janitor_name(session)
+
+        def take(current):
+            if current is None:
+                raise NotFound("That report no longer exists.")
+            if current.get("status") == "resolved":
+                raise Conflict("This one is already done. Thank you!")
+            holder = current.get("assignedTo") or {}
+            if holder and holder.get("uid") != session.uid:
+                raise Conflict(f"Already taken by {holder.get('name') or holder.get('username')}.")
+            current.update(status="in_progress", acceptedAt=current.get("acceptedAt") or iso(utcnow()),
+                           assignedTo={"uid": session.uid, "username": session.username, "name": name})
+            return current
+
+        self.store.transact(self.C_REPORTS, report_id, take)
+        report = self._add_report_note(report_id, session.actor, f"Taken by {name} in the app", "in_progress")
+        self.audit("report_updated", session.actor, report_id, {"status": "in_progress", "via": "app"})
+        return self._job(report_id, report, session.uid)
+
+    def janitor_done(self, session: Session, report_id: str, note: str = "") -> dict:
+        """'Done' in the app: the same as texting DONE <number>."""
+        name = self._janitor_name(session)
+
+        def finish(current):
+            if current is None:
+                raise NotFound("That report no longer exists.")
+            if current.get("status") == "resolved":
+                raise Conflict("This one is already marked done.")
+            holder = current.get("assignedTo") or {}
+            if holder and holder.get("uid") != session.uid:
+                raise Conflict(f"{holder.get('name') or holder.get('username')} is working on this one.")
+            me = {"uid": session.uid, "username": session.username, "name": name}
+            current.setdefault("assignedTo", me)
+            current.setdefault("acceptedAt", iso(utcnow()))
+            current["resolvedBy"] = me
+            return current
+
+        self.store.transact(self.C_REPORTS, report_id, finish)
+        text = f"Marked done by {name} in the app" + (f": {note.strip()[:300]}" if (note or "").strip() else "")
+        report = self._add_report_note(report_id, session.actor, text, "resolved")
+        self.audit("report_updated", session.actor, report_id, {"status": "resolved", "via": "app"})
+        return self._job(report_id, report, session.uid)
+
+    def report_problem(self, session: Session, location: str, issues: list[str], details: str = "",
+                       location_code: str = "") -> dict:
+        """'Report a problem' (janitors and admins): pick the restroom, tap what's wrong.
+        Same fixed rules as the public page: emergencies text everyone."""
+        from .report_schema import category_for, issue_map, priority_for, title_for
+
+        known = issue_map()
+        issues = list(dict.fromkeys(c for c in (issues or []) if c in known))
+        if not issues:
+            raise BadRequest("Tap at least one problem.")
+        location = " ".join((location or "").split())[:60]
+        if not location:
+            raise BadRequest("Pick the restroom.")
+        category = category_for(issues)
+        urgency = "high" if "emergency" in issues else "medium"
+        report = self._save_report(
+            category=category, title=title_for(issues), location=location, details=(details or "").strip()[:500],
+            priority=priority_for(issues, urgency),
+            created_by={"uid": session.uid, "username": session.username},
+            extra={"source": session.role, "channel": "app", "issues": issues, "urgency": urgency,
+                   "locationCode": (location_code or "")[:12] or None})
+        report_id = report.pop("id")
+        self.audit("report_created", session.actor, report_id, {"category": category, "title": report["title"]})
+        notified = 0
+        if category == "emergency":
+            recipients = [r for r in self.sms_recipients() if r["uid"] != session.uid]
+            self._notify_async(report_id, recipients,
+                               alert_text("EMERGENCY", report["smsRef"], report["title"], location, report["details"]))
+            notified = len(recipients)
+        return {"id": report_id, "ref": report["smsRef"], "title": report["title"], "notified": notified,
+                "message": f"Report #{report['smsRef']} sent." + (f" Texting {notified} people." if notified else "")}
+
+    def report_options(self) -> dict:
+        """Restrooms and problem types for the report forms (same lists as the public page)."""
+        from .report_schema import schema
+        return {"locations": public_locations(), "issues": schema()["issues"], "categories": schema()["categories"]}
 
     def janitor_overview(self, session: Session) -> dict:
         return {

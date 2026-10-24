@@ -39,7 +39,7 @@ if systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null; then
   systemctl --user stop "$UNIT" 2>/dev/null
 fi
 pkill -f "tools/kiosk.sh" 2>/dev/null   # the old kiosk restart loop (no longer used)
-pkill -f "desktop.app" 2>/dev/null
+pkill -f "desktop\.(app|shell)" 2>/dev/null
 pkill -f "backend.main" 2>/dev/null
 sleep 1
 

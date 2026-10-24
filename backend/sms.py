@@ -211,7 +211,7 @@ class ModemSender:
             except SmsError as exc:
                 if attempt == 2:
                     raise SmsError("The modem is not answering. Check its power supply, wiring (TX/RX) "
-                                   "and baud rate (Tools → Find & use modem).") from exc
+                                   "and baud rate (System → SMS → Find & use modem).") from exc
         self._cmd(ser, "ATE0")          # no echo
         self._cmd(ser, "AT+CMGF=1")     # text mode
         self._cmd(ser, 'AT+CSCS="GSM"')

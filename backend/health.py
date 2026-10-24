@@ -63,7 +63,7 @@ class HealthMonitor:
     def modem(self):
         sms = self.svc.sms
         if sms.mode != "modem":
-            return _check("modem", "SMS modem", "warn", "Test mode: texts are NOT sent. Tools → Find & use modem.")
+            return _check("modem", "SMS modem", "warn", "Test mode: texts are NOT sent. System → SMS → Find & use modem.")
 
         def probe():
             try:
@@ -97,7 +97,7 @@ class HealthMonitor:
         p = self.svc.get_sim_promo()
         if not p["set"]:
             return _check("promo", "SIM promo", "off",
-                          "Not set. If the SIM is on a promo (e.g. unli texts), enter it in Tools → SMS → Set promo "
+                          "Not set. If the SIM is on a promo (e.g. unli texts), enter it in System → SMS → Set promo "
                           "so you're warned before it ends.")
         days, ends = p["daysLeft"], _nice_date(p["expires"])
         if days < 0:

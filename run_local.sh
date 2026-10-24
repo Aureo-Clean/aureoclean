@@ -55,4 +55,14 @@ else
 fi
 
 echo "Opening the desktop app…"
-"$PY" -m desktop.app "$@"
+# The new screens (web app in a Pi window). ./run_local.sh --classic opens the previous screens.
+STARTED=$(date +%s)
+"$PY" -m desktop.shell "$@"
+CODE=$?
+# Safety net: if the new window can't start at all, open the previous screens instead.
+if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 3 ] && [ $(( $(date +%s) - STARTED )) -lt 20 ]; then
+  echo "The new screens didn't start (exit code $CODE); opening the classic screens. Details: logs/desktop-crash.log"
+  "$PY" -m desktop.app "$@"
+  CODE=$?
+fi
+exit "$CODE"

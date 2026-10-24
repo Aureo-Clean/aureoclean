@@ -1,4 +1,8 @@
-"""AureoClean local API (FastAPI). Listens on 127.0.0.1 only.
+"""AureoClean local API (FastAPI) and web app.
+
+Listens on 127.0.0.1 (the Pi's own screen). When "Website on Wi-Fi" is turned
+on, a second listener lets phones and laptops on the same Wi-Fi in too
+(private network addresses only; see backend/web.py).
 
 Run with:  python -m backend.main
 """
@@ -10,12 +14,13 @@ import time
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .factory import build_service
 from .providers.base import ProviderError
-from .service import ROLE_ADMIN, ROLE_JANITOR, AureoService, ServiceError, Session
+from .service import ROLE_ADMIN, ROLE_JANITOR, AureoService, ServiceError, ServiceUnavailable as ServiceUnavailableError, Session
+from .web import SECURITY_HEADERS, TYPES, RateLimit, is_private, qr_svg, static_file
 
 log = logging.getLogger("aureoclean")
 
@@ -70,6 +75,21 @@ class SimPromoBody(BaseModel):
     name: str = Field(default="", max_length=60)
     days: int = Field(default=15, ge=1, le=400)
     registered: str = Field(default="", max_length=10)
+
+
+class JobDoneBody(BaseModel):
+    note: str = Field(default="", max_length=300)
+
+
+class ProblemBody(BaseModel):
+    location: str = Field(max_length=80)
+    locationCode: str = Field(default="", max_length=12)
+    issues: list[str] = Field(default_factory=list, max_length=20)
+    details: str = Field(default="", max_length=500)
+
+
+class WebToggleBody(BaseModel):
+    enabled: bool
 
 
 class RejectBody(BaseModel):
@@ -130,12 +150,29 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
             app.state.service = build_service()
         return app.state.service
 
+    # Sign-in and sign-up attempts from the Wi-Fi website, per phone/laptop.
+    wifi_auth_limit = RateLimit(20, 600)
+
+    def via_wifi(request: Request) -> bool:
+        web = getattr(app.state, "web", None)
+        server = request.scope.get("server") or ("", 0)
+        return web is not None and server[1] == web.port
+
     @app.middleware("http")
-    async def loopback_only(request: Request, call_next):
-        # Defence in depth: the server is bound to 127.0.0.1, but refuse
-        # anything that somehow arrives from another host anyway.
+    async def allowed_clients_only(request: Request, call_next):
         client = request.client.host if request.client else ""
-        if client not in ("127.0.0.1", "::1", "testclient"):
+        if via_wifi(request):
+            # The Wi-Fi website: same-network devices only, and gentle limits on sign-in attempts.
+            if not is_private(client):
+                return JSONResponse({"detail": "Only devices on the same Wi-Fi can open AureoClean."}, status_code=403)
+            path = request.url.path
+            if request.method == "POST" and (path.startswith("/register/") or path in (
+                    "/auth/login", "/auth/verify-admin", "/auth/resend-verification")):
+                if not wifi_auth_limit.allow(client):
+                    return JSONResponse({"detail": "Too many attempts from this device. Wait a few minutes."},
+                                        status_code=429)
+        elif client not in ("127.0.0.1", "::1", "testclient"):
+            # Defence in depth: the main server is bound to 127.0.0.1; refuse anything else anyway.
             return JSONResponse({"detail": "Forbidden"}, status_code=403)
         started = time.monotonic()
         response = await call_next(request)
@@ -168,6 +205,21 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     def janitor(token: str = Depends(bearer)) -> Session:
         return svc().require_session(token, ROLE_JANITOR)
+
+    # ------------------------------------------------ the web app (screens)
+    def page(rel: str):
+        path = static_file(rel)
+        if path is None:
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return FileResponse(path, media_type=TYPES[path.suffix], headers=SECURITY_HEADERS)
+
+    @app.get("/")
+    def web_index():
+        return page("index.html")
+
+    @app.get("/assets/{path:path}")
+    def web_asset(path: str):
+        return page(f"assets/{path}")
 
     # ------------------------------------------------ public
     @app.get("/health")
@@ -366,10 +418,76 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def audit(limit: int = 200, _: Session = Depends(admin)):
         return svc().list_audit(limit)
 
+    @app.get("/admin/reports/export.xlsx")
+    def export_xlsx(days: int = 30, _: Session = Depends(admin)):
+        import io
+        import tempfile
+        from datetime import datetime
+
+        from .analysis import dataset, summarize
+        from .exporting import write_xlsx
+
+        days = max(1, min(days, 365))
+        records = dataset(svc(), days)
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as tmp:
+            write_xlsx(tmp.name, summarize(records), records, days)
+            data = io.BytesIO(open(tmp.name, "rb").read()).getvalue()
+        name = f"AureoClean-reports-{datetime.now():%Y%m%d}.xlsx"
+        return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+    # ------------------------------------------------ Wi-Fi website (admin)
+    def web_access():
+        web = getattr(app.state, "web", None)
+        if web is None:
+            raise ServiceUnavailableError("The Wi-Fi website isn't available in this mode.")
+        return web
+
+    @app.get("/admin/web")
+    def web_status(_: Session = Depends(admin)):
+        web = getattr(app.state, "web", None)
+        return web.status() if web else {"enabled": False, "running": False, "urls": [], "error": None,
+                                         "available": False}
+
+    @app.post("/admin/web")
+    def web_toggle(body: WebToggleBody, session: Session = Depends(admin)):
+        status = web_access().set_enabled(body.enabled)
+        svc().audit("wifi_website_" + ("on" if body.enabled else "off"), session.actor, None)
+        return status
+
+    @app.get("/admin/web/qr.svg")
+    def web_qr(_: Session = Depends(admin)):
+        urls = web_access().status()["urls"]
+        svg = qr_svg(urls[1] if len(urls) > 1 else urls[0])
+        if svg is None:
+            return JSONResponse({"detail": "QR codes need the segno package (run Update AureoClean)."}, status_code=404)
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+    # ------------------------------------------------ reporting a problem (any role)
+    @app.get("/report-options")
+    def report_options(_: Session = Depends(any_user)):
+        return svc().report_options()
+
+    @app.post("/reports/problem")
+    def report_problem(body: ProblemBody, session: Session = Depends(any_user)):
+        return svc().report_problem(session, body.location, body.issues, body.details, body.locationCode)
+
     # ------------------------------------------------ janitor only
     @app.get("/janitor/overview")
     def janitor_overview(session: Session = Depends(janitor)):
         return svc().janitor_overview(session)
+
+    @app.get("/janitor/jobs")
+    def janitor_jobs(session: Session = Depends(janitor)):
+        return svc().janitor_jobs(session)
+
+    @app.post("/janitor/jobs/{report_id}/take")
+    def janitor_take(report_id: str, session: Session = Depends(janitor)):
+        return svc().janitor_take(session, report_id)
+
+    @app.post("/janitor/jobs/{report_id}/done")
+    def janitor_done(report_id: str, body: JobDoneBody, session: Session = Depends(janitor)):
+        return svc().janitor_done(session, report_id, body.note)
 
     return app
 
@@ -392,6 +510,11 @@ def run() -> None:
     app.state.network.start()
     log.info("AureoClean API starting in %s mode on %s:%s", settings.mode, settings.host, settings.port)
     start_web_signup_import(service)
+    from .web import WebAccess
+
+    app.state.web = WebAccess(app, settings.sms_settings_file.with_name("web.json"))
+    if app.state.web.enabled:  # the Wi-Fi website was left on: start it again
+        threading.Timer(2, app.state.web.start).start()
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
 
 

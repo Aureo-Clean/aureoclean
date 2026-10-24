@@ -1,20 +1,27 @@
-# AureoClean — Desktop app (accounts module)
+# AureoClean
 
 Automated restroom hygiene monitoring · STI College Caloocan
 
-The rebuilt AureoClean desktop app. Included so far:
-
-- **Sign-in and registration** for administrators and janitors, each with their own screens and permissions.
-- **SMS sign-up**: after signing in, anyone can add a mobile number, confirm it with a texted code, and switch SMS alerts on or off.
-- **Arduino IoT Cloud shortcuts**: an "Open" button for the monitoring dashboard (both roles), plus Arduino Cloud and Firebase Console (admins).
-- **Desktop icon** for the Raspberry Pi menu and desktop.
-
-Coming next: restroom alerts from the Realtime Database, then LLM recommendations, then sending those alerts by SMS.
+- **One set of screens** for the Pi's 7-inch display and for phones/laptops on the same Wi-Fi
+  (`webapp/`), built from the "AureoClean UI Redesign" design: navy sidebar on the Pi, bottom
+  tab bar on phones, light animations.
+- **Admins**: Home (live sensors, today at a glance) · Reports (filter, details, notes, charts,
+  Excel/PDF) · People (sign-up requests, users, admin invites) · System (health, SMS modem,
+  SIM promo, kiosk mode, Wi-Fi website, activity log) · My account.
+- **Janitors**: My jobs (big cards: *I'll take it* → *Done*, same as texting OK/DONE) ·
+  Report a problem (tap the restroom, tap what's wrong) · Live sensors · My account.
+- **SMS**: alerts, two-way OK/DONE replies, escalation, SIM promo reminders (GSM modem).
+- **Public pages** (GitHub Pages): QR report page and janitor sign-up link.
 
 ```
-PySide6 desktop app  ──HTTP (127.0.0.1:8765 only)──▶  FastAPI backend  ──▶  Firebase Auth + Firestore
-   desktop/                                              backend/              (or a local SQLite file)
+Pi window (desktop/shell.py) ─┐
+                              ├─HTTP─▶ AureoClean service (backend/, 127.0.0.1:8765) ─▶ Firebase / SQLite
+Phones on the same Wi-Fi ─────┘          + the web app (webapp/)         └─▶ GSM modem (SMS)
+   (optional listener on :8080, private network addresses only)
 ```
+
+`./run_local.sh --classic` opens the previous Qt screens (also used automatically if the new
+window can't start).
 
 ## How accounts work
 
@@ -24,7 +31,7 @@ PySide6 desktop app  ──HTTP (127.0.0.1:8765 only)──▶  FastAPI backend 
 | Approval | An admin approves → app shows a **one-time activation code** (8 chars, expires in 48 h, 5 wrong tries max). The admin gives it to the janitor in person. | The invite itself is the approval. |
 | Finish | Janitor chooses **"I have an activation code"**, enters username + code, sets a password. Only now is the sign-in account created. | Creates the account straight away with the invite. |
 | Sign in | Username **or** email + password. | Same. |
-| Can do | Home (restroom alerts — placeholder until sensors are connected), open the monitoring dashboard, profile, **add/verify mobile number + SMS alerts on/off**, change password. | Review/approve/reject requests, re-issue codes, enable/disable users, **send a test SMS**, create/revoke admin invites, audit log, **Tools tab** (dashboard, Arduino Cloud, Firebase, SMS modem check), own SMS settings, change password. |
+| Can do | **My jobs** (take / done), **Report a problem**, live sensors, my account (**mobile number + SMS alerts**, password, lock PIN). | Home, Reports + charts, People (approve/reject requests, re-issue codes, enable/disable/delete users, test SMS, admin invites), System (health, SMS modem, SIM promo, kiosk, Wi-Fi website, activity log), my account. |
 
 **The first admin** is created on the Pi with `tools/create_admin.py, tools/install_launcher.sh` (you need
 physical access to the Pi and its service-account key, so that is the trust root).
@@ -116,7 +123,7 @@ Use **A− / A+** to zoom the dashboard to fit the 7-inch screen (remembered), a
 Whoever is signed in to Arduino there decides what can be changed — a view-only Arduino account
 shared with the dashboard is the safest choice.
 
-Admins open Arduino Cloud and the Firebase Console from the **Tools** tab; those open in
+Admins open Arduino Cloud and the Firebase Console from **System → Kiosk & web → Websites**; those open in
 **Google Chrome** (install once with `./tools/install_chrome.sh`). In Chrome, turn on
 *Settings → On start-up → Continue where you left off* so websites keep you signed in after closing Chrome.
 
@@ -137,7 +144,7 @@ before the modem is wired:
 tail -n 5 ~/aureoclean/logs/sms_outbox.log
 ```
 
-**Turn the modem on from the app (easiest):** sign in as admin → **Tools** → **Find & use modem**.
+**Turn the modem on from the app (easiest):** sign in as admin → **System → SMS** → **Find & use modem**.
 AureoClean searches the serial ports and speeds, switches to the modem immediately and remembers it
 (saved in `~/.config/aureoclean/sms.json`, which overrides `AUREOCLEAN_SMS_MODE` in the config file).
 **Check signal** shows network, operator and signal; **Send test SMS** texts any number;
@@ -159,7 +166,7 @@ It finds the right speed by itself and prints the exact settings to put in the c
    The Pi's pins are **3.3 V** — if the module's TX is 5 V, use a level shifter or a voltage divider.
 3. Power the modem from its own supply (SIM900A boards want ~5 V **2 A**; it draws spikes when sending). Never from the Pi's 3.3 V pin.
 4. Insert a SIM with load, set `AUREOCLEAN_SMS_MODE=modem` (port defaults to `/dev/serial0`, 9600 baud), restart.
-5. Admin → **Tools** → **Check SMS modem** should say *registered* with a signal value; then
+5. Admin → **System → SMS** → **Check signal** should say *registered* with a signal value; then
    **Users** → select a user with a verified number → **Send test SMS**.
 
 > **⚠ SIM900A and the 2G shutdown.** The SIM900A only works on 2G. The NTC has
@@ -210,23 +217,35 @@ and builds a ready-to-send prompt; `analyze(service, ask=...)` sends it to any L
 Setup: GitHub repo → Settings → Pages → Deploy from a branch → `main` / `docs`. Then paste
 `firestore.rules` into Firebase Console → Firestore → Rules → Publish.
 
-## Reports tab (admin)
+## Reports (admin) and My jobs (janitors)
 
-Public reports arrive here automatically (column "From": QR code / Report page). Admins can also log
-**emergencies**, **broken facilities**, **supplies**, **cleanliness** and **system problems** with type, priority, location and
-details; move them Open → In progress → Resolved, add notes, and see the full history.
-Optionally text the janitors (or everyone with SMS on) when saving: the result of the texts is
-added to the report's history. The tab name shows the number of open reports.
+Public reports arrive automatically (QR code / report page), janitors can **Report a problem**,
+and admins can add **New report** (type, priority, place, details, optionally text the janitors
+or everyone). Open a report for its details and history, add notes, mark it in progress / done
+or reopen it. **Charts** shows the last 7/30/90 days; **Excel** downloads the data and **PDF**
+saves a printable summary (on the Pi both go to ~/Documents).
 
-## System health (Tools tab)
+Janitors see open jobs as big cards. **I'll take it** and **Done** do the same as texting
+`OK 12` / `DONE 12`; whichever comes first counts, and someone else's job shows as "X is on it".
 
-The **System health** card at the top of Tools shows, with a coloured dot each:
+## Website on Wi-Fi
+
+System → **Kiosk & web** → *Website on Wi-Fi* lets phones and laptops on the **same Wi-Fi** open
+AureoClean (everything works the same as on the Pi). The addresses and a QR code are shown
+there, e.g. `http://raspberrypi.local:8080`. It only accepts private network addresses and
+limits sign-in attempts per device; it is never reachable from the internet unless someone
+forwards the port. Note: it's plain `http`, like most devices on a local network, so use it on
+a Wi-Fi you trust (some school networks also block phones from reaching other devices).
+
+## System health (System → Health)
+
+**System → Health** shows, with a coloured dot each:
 internet, Firebase, the SMS modem and signal, the SIM promo, whether texts are going out, the website import
 and SMS-reply jobs, and the Pi's temperature, free storage and memory. When
-something needs attention the tab is renamed **Tools ⚠** (checked every 2 minutes).
+something needs attention System shows a **!** badge (checked every 2 minutes).
 
 **SIM promo:** if the modem's SIM is on a promo (e.g. Globe unli calls & texts for
-15 days), enter it in Tools → SMS → **Set promo…** (name, days, day registered).
+15 days), enter it in System → SMS → **Set promo** (name, days, day registered).
 System health counts down the days, and the admins get a text the day before it
 ends and again if it has ended. **Sending texts** turns red when texts start
 failing — e.g. the promo ran out, or it doesn't cover the other network.
@@ -237,18 +256,16 @@ a phone to `~/.config/aureoclean/aureoclean.env` as
 
 ## Kiosk mode (7" screen)
 
-Kiosk mode is a switch: **Tools → Kiosk mode**. While it's on, the app is full
-screen, can't be closed by accident, and locks after 5 minutes without use
-(unlock with a 4–6 digit PIN from Account → **Screen-lock PIN…**, or the
-password). To leave it: untick the switch, or press **Exit kiosk mode…** on the
-sign-in screen (an admin's username and password are needed). The app always
-starts in a normal window. Change the lock time with
-`AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never lock).
+Kiosk mode is a switch: **System → Kiosk & web**. While it's on, the app is full screen, can't
+be closed by accident, and locks after 5 minutes without a touch (unlock with a 4–6 digit PIN
+from My account → **Screen-lock PIN**, or the password; five wrong tries sign out; **Lock** in
+the sidebar locks right away). To leave it: turn the switch off, or press **Exit kiosk mode…**
+on the sign-in screen (an admin's username and password are needed). The app always starts in a
+normal window. Change the lock time with `AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never).
 
-Optional: `./tools/install_service.sh` runs the service (texts, replies, website
-reports) in the background from boot and restarts it if it crashes, so closing the
-window doesn't stop alerts. Add `--autostart` to also open the app at boot;
-`--remove` undoes it.
+Optional: `./tools/install_service.sh` runs the service (texts, replies, website reports) in the
+background from boot and restarts it if it crashes, so closing the window doesn't stop alerts.
+Add `--autostart` to also open the app at boot; `--remove` undoes it.
 
 ## Updating to a new version
 
@@ -302,18 +319,20 @@ collide with the older `securityApp…` collections or the complaints/QR data.
 
 ```
 backend/
-  main.py          FastAPI routes + role checks
-  service.py       all account + SMS rules (shared by both modes)
-  sms.py           SMS senders: test mode (log) and GSM/LTE modem (AT commands)
-  security.py      hashing, codes, validation, lockouts
-  config.py        settings from ~/.config/aureoclean/aureoclean.env
+  main.py          API routes, role checks, web app files, Wi-Fi website guard
+  service.py       all rules: accounts, reports, janitor jobs, SMS, promo
+  web.py           Wi-Fi website listener, security headers, rate limits
+  two_way.py       SMS replies (OK/DONE) and escalation
+  health.py        System health checks
+  analysis.py      report statistics (charts, Excel, LLM-ready data)
+  sms.py           SMS senders: test mode (log) and GSM modem (AT commands)
   providers/       firebase.py (Auth + Firestore), local.py (SQLite)
+webapp/            the screens (HTML/CSS/JS, no build step): js/main.js, admin.js, janitor.js, …
 desktop/
-  app.py           window + navigation
-  pages/           auth.py (sign-in, request, activate, admin register, status)
-                   admin.py (admin console), janitor.py (janitor home)
-  api.py, widgets.py, theme.py
-tools/create_admin.py, tools/install_launcher.sh
+  shell.py         the Pi window: shows webapp/, Arduino dashboard, kiosk, downloads/PDF
+  app.py, pages/   the classic Qt screens (./run_local.sh --classic)
+docs/              public GitHub Pages: report page, sign-up link, QR posters
+tools/             update.sh, install_launcher.sh, install_service.sh, create_admin.py, …
 tests/
 ```
 
