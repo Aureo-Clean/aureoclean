@@ -189,7 +189,31 @@ class ActivityFilter(QObject):
         return False
 
 
+def _log_crashes() -> None:
+    """Write any error, or a hard crash, to logs/desktop-crash.log (the icon has no terminal)."""
+    import faulthandler
+    import traceback
+    from datetime import datetime
+
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
+    try:
+        log_dir.mkdir(exist_ok=True)
+        crash_file = open(log_dir / "desktop-crash.log", "a", buffering=1)  # noqa: SIM115 (kept open)
+    except OSError:
+        return
+    crash_file.write(f"\n=== AureoClean started {datetime.now():%Y-%m-%d %H:%M:%S} (args: {' '.join(sys.argv[1:])})\n")
+    faulthandler.enable(crash_file)  # a real crash (segfault/abort) still gets a stack trace
+
+    def hook(kind, value, tb):
+        crash_file.write(f"--- error at {datetime.now():%H:%M:%S}\n")
+        traceback.print_exception(kind, value, tb, file=crash_file)
+        sys.__excepthook__(kind, value, tb)
+
+    sys.excepthook = hook
+
+
 def main() -> int:
+    _log_crashes()
     # Needed by the embedded dashboard (Qt WebEngine); must be set before the app starts.
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
@@ -207,7 +231,9 @@ def main() -> int:
         window.showMaximized()
     else:
         window.show()
-    return app.exec()
+    code = app.exec()
+    print(f"AureoClean closed (exit code {code}).", file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":
