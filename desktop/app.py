@@ -216,12 +216,25 @@ def main() -> int:
     _log_crashes()
     # Needed by the embedded dashboard (Qt WebEngine); must be set before the app starts.
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
-    app = QApplication(sys.argv)
+    # Our own options (--kiosk, --fullscreen, --maximized) stay ours: Qt hands its arguments
+    # to the dashboard's built-in Chromium, which has a --kiosk mode of its own.
+    app = QApplication(sys.argv[:1])
     app.setApplicationName("AureoClean")
     app.setDesktopFileName("aureoclean")
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "icon-256.png")))
     app.setStyleSheet(STYLESHEET)
     app.focusChanged.connect(keep_focus_visible)
+    # Only one AureoClean window at a time: two copies fight over the dashboard's
+    # browser profile, and the second one crashes when the dashboard loads.
+    from PySide6.QtCore import QLockFile
+    from PySide6.QtWidgets import QMessageBox
+    lock_path = Path.home() / ".config" / "aureoclean" / "desktop.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    instance_lock = QLockFile(str(lock_path))
+    instance_lock.setStaleLockTime(0)
+    if not instance_lock.tryLock(2000):
+        QMessageBox.information(None, "AureoClean", "AureoClean is already open on this Pi.")
+        return 3  # not 0: kiosk mode tries again later instead of stopping
     window = MainWindow()
     activity = ActivityFilter(window)
     app.installEventFilter(activity)

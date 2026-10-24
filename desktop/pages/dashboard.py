@@ -155,7 +155,10 @@ class DashboardPanel(QWidget):
         self._fail_timer = QTimer(self)
         self._fail_timer.setSingleShot(True)
         self._fail_timer.timeout.connect(self._really_failed)
-        if HAS_WEBENGINE:
+        # Safe mode (set by kiosk.sh after the app closed by itself twice in a row):
+        # start without the embedded browser so signing in always works.
+        self.safe_mode = os.environ.get("AUREOCLEAN_SAFE_MODE") == "1"
+        if HAS_WEBENGINE and not self.safe_mode:
             self.profile = _make_profile(self)
             self.view = QWebEngineView()
             page = _DashboardPage(self.profile, self.view)
@@ -187,6 +190,13 @@ class DashboardPanel(QWidget):
             self._message("Dashboard not set up yet",
                           "An administrator adds the Arduino IoT Cloud dashboard link to "
                           "~/.config/aureoclean/aureoclean.env as AUREOCLEAN_DASHBOARD_URL=… and restarts the app.")
+            return
+        if self.view is None and self.safe_mode:
+            self.url = url
+            self._message("Dashboard paused (safe mode)",
+                          "AureoClean closed by itself twice while starting, so it was reopened without the "
+                          "built-in dashboard. Everything else works. The dashboard comes back the next time the "
+                          "app starts normally; details are in logs/desktop-crash.log.")
             return
         if self.view is None:
             self.url = url
