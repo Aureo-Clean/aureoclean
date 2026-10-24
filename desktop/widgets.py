@@ -101,12 +101,23 @@ def card(parent: Optional[QWidget] = None) -> tuple[QFrame, QVBoxLayout]:
 ASSETS = Path(__file__).resolve().parent / "assets"
 
 
+# Optional personal logo kept only on this Pi (never in the public GitHub repo).
+# Put a square PNG here to replace the logo in the app; delete it to go back.
+CUSTOM_LOGO = Path("~/.config/aureoclean/logo.png").expanduser()
+
+
+def logo_path(kind: str = "mark") -> Path:
+    if CUSTOM_LOGO.is_file():
+        return CUSTOM_LOGO
+    return ASSETS / ("logo-mark.svg" if kind == "mark" else "icon-256.png")
+
+
 def logo_label(size: int, white_tile: bool = False) -> QLabel:
-    """The AureoClean logo mark as a fixed-size label."""
+    """The AureoClean logo mark (or the Pi's personal logo) as a fixed-size label."""
     from PySide6.QtGui import QIcon
 
     lbl = QLabel()
-    lbl.setPixmap(QIcon(str(ASSETS / "logo-mark.svg")).pixmap(size, size))
+    lbl.setPixmap(QIcon(str(logo_path())).pixmap(size, size))
     lbl.setFixedSize(size + (6 if white_tile else 0), size + (6 if white_tile else 0))
     lbl.setAlignment(Qt.AlignCenter)
     if white_tile:
