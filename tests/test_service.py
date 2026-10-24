@@ -227,3 +227,35 @@ class AdminFlow(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeleteAccount(Base):
+    def test_delete_janitor_and_guards(self):
+        _, code = self.approved()
+        self.svc.activate_janitor("MarkAgot", code, "Janitor123")
+        token = self.svc.login("MarkAgot", "Janitor123")["token"]
+        uid = self.svc.require_session(token).uid
+
+        with self.assertRaises(BadRequest):  # must type the username
+            self.svc.delete_user(self.admin, uid, "someoneelse")
+        with self.assertRaises(BadRequest):  # not yourself
+            self.svc.delete_user(self.admin, self.admin.uid, "headadmin")
+
+        self.svc.delete_user(self.admin, uid, "markagot")
+        with self.assertRaises(Unauthorized):  # signed out at once
+            self.svc.require_session(token)
+        with self.assertRaises(Unauthorized):  # can't sign in
+            self.svc.login("MarkAgot", "Janitor123")
+        self.assertIsNone(self.svc.identity.find_uid("mark@example.com"))
+        self.assertNotIn("MarkAgot", [u["username"] for u in self.svc.list_users()])
+        self.assertIn("user_deleted", [a["action"] for a in self.svc.list_audit()])
+        # username is free again
+        self.svc.submit_janitor_request("Mark Agot", "MarkAgot", "mark2@example.com")
+
+    def test_admin_can_delete_another_admin(self):
+        self.svc.bootstrap_admin("Second", "second", "second@example.com", PW)
+        second = self.svc.require_session(self.svc.login("second", PW)["token"])
+        self.svc.delete_user(second, self.admin.uid, "HeadAdmin")  # case doesn't matter
+        with self.assertRaises(Unauthorized):
+            self.svc.login("headadmin", PW)
+        self.assertEqual([u["username"] for u in self.svc.list_users()], ["second"])

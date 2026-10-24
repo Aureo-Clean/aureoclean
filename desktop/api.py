@@ -117,6 +117,10 @@ class ApiClient:
     def set_sms_alerts(self, enabled: bool):
         return self._call("POST", "/me/sms-alerts", {"enabled": enabled})
 
+    def delete_user(self, uid, confirm_username: str):
+        return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/delete",
+                          {"confirmUsername": confirm_username})
+
     def test_sms(self, uid):
         return self._call("POST", f"/admin/users/{urllib.parse.quote(uid)}/test-sms", timeout=SMS_TIMEOUT)
 

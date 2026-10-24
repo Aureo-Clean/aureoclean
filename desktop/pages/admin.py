@@ -49,6 +49,7 @@ ACTION_LABELS = {
     "admin_linked_existing": "Existing account linked as admin",
     "user_enabled": "User enabled",
     "user_disabled": "User disabled",
+    "user_deleted": "Account deleted",
     "password_changed": "Password changed",
     "sms_code_sent": "SMS verification code sent",
     "sms_phone_verified": "Mobile number verified",
@@ -436,9 +437,11 @@ class UsersTab(_Tab):
         row = QHBoxLayout()
         self.toggle_btn = button("Disable account", "Danger", self.toggle)
         self.sms_btn = button("Send test SMS", on_click=self.test_sms)
+        self.delete_btn = button("Delete account…", "Danger", self.delete)
         row.addWidget(self.toggle_btn)
         row.addWidget(self.sms_btn)
         row.addStretch(1)
+        row.addWidget(self.delete_btn)
         self.layout_.addLayout(row)
         self.update_buttons()
 
@@ -460,6 +463,7 @@ class UsersTab(_Tab):
     def update_buttons(self):
         user = selected_object(self.table)
         self.sms_btn.setEnabled(bool(user and user.get("smsPhone")))
+        self.delete_btn.setEnabled(bool(user and user["uid"] != self.my_uid))
         if not user or user["uid"] == self.my_uid:
             self.toggle_btn.setEnabled(False)
             self.toggle_btn.setText("Disable account")
@@ -483,6 +487,29 @@ class UsersTab(_Tab):
 
         run_async(lambda: self.api.set_user_active(user["uid"], enable), ok, self.fail)
 
+    def delete(self):
+        user = selected_object(self.table)
+        if not user or user["uid"] == self.my_uid:
+            return
+        who = user.get("fullName") or user["username"]
+        text, ok = QInputDialog.getText(
+            self, "Delete account",
+            f"Permanently delete {who} ({user['role']})?\n\n"
+            "They lose access straight away and stop getting SMS alerts. This can't be undone; "
+            "if you only want to block them for now, use “Disable account” instead.\n\n"
+            f"To confirm, type the username:  {user['username']}")
+        if not ok:
+            return
+        if text.strip().lower() != user["username"].lower():
+            self.message.error("Not deleted: the username you typed didn't match.")
+            return
+
+        def done(result):
+            self.message.success(result["message"])
+            self.refresh()
+            self.on_change()
+
+        run_async(lambda: self.api.delete_user(user["uid"], text.strip()), done, self.fail)
 
     def test_sms(self):
         user = selected_object(self.table)

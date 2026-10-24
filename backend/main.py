@@ -68,6 +68,10 @@ class UserStatusBody(BaseModel):
     active: bool
 
 
+class DeleteUserBody(BaseModel):
+    confirmUsername: str = Field(max_length=40)
+
+
 class ReportBody(BaseModel):
     category: str = Field(max_length=20)
     title: str = Field(max_length=120)
@@ -235,6 +239,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     @app.post("/admin/users/{uid}/status")
     def user_status(uid: str, body: UserStatusBody, session: Session = Depends(admin)):
         return svc().set_user_status(session, uid, body.active)
+
+    @app.post("/admin/users/{uid}/delete")
+    def delete_user(uid: str, body: DeleteUserBody, session: Session = Depends(admin)):
+        return svc().delete_user(session, uid, body.confirmUsername)
 
     @app.post("/admin/users/{uid}/test-sms")
     def test_sms(uid: str, session: Session = Depends(admin)):

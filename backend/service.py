@@ -855,6 +855,38 @@ class AureoService:
         self.audit("user_enabled" if active else "user_disabled", admin.actor, uid, {"username": profile["username"]})
         return _public_profile(profile)
 
+    def delete_user(self, admin: Session, uid: str, confirm_username: str) -> dict:
+        """Permanently delete an account: sign-in account, profile, username and sessions.
+
+        The audit log keeps a record that it happened (who, when, which username),
+        and past reports keep the name they were filed under."""
+        if uid == admin.uid:
+            raise BadRequest("You cannot delete your own account.")
+        profile = self.store.get(self.C_USERS, uid)
+        if not profile:
+            raise NotFound("User not found.")
+        if normalize_username(confirm_username) != profile.get("usernameNormalized", normalize_username(profile["username"])):
+            raise BadRequest(f"To confirm, type the username exactly: {profile['username']}")
+        if profile.get("role") == ROLE_ADMIN:
+            others = [u for _, u in self.store.query(self.C_USERS, role=ROLE_ADMIN, status="active") if u["uid"] != uid]
+            if not others:
+                raise BadRequest("You can't delete the last active administrator.")
+
+        if not profile.get("smsOnly"):
+            try:
+                self.identity.delete_account(uid)
+            except Exception as exc:  # already gone in Firebase is fine; anything else stops here
+                if "not found" not in str(exc).lower() and type(exc).__name__ != "UserNotFoundError":
+                    raise ServiceUnavailable(f"Couldn't delete the sign-in account: {exc}")
+        self.sessions.revoke_user(uid)
+        norm = profile.get("usernameNormalized") or normalize_username(profile["username"])
+        entry = self.store.get(self.C_USERNAMES, norm)
+        if entry and entry.get("uid") == uid:
+            self.store.delete(self.C_USERNAMES, norm)
+        self.store.delete(self.C_USERS, uid)
+        self.audit("user_deleted", admin.actor, uid, {"username": profile["username"], "role": profile.get("role")})
+        return {"message": f"{profile.get('fullName') or profile['username']}'s account was deleted."}
+
     # ============================================================ SMS (any signed-in user)
     def _update_profile(self, uid: str, fn) -> dict:
         def update(current):
