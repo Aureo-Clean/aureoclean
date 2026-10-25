@@ -98,7 +98,13 @@ class RejectBody(BaseModel):
 
 class InviteBody(BaseModel):
     email: str = Field(default="", max_length=254)
+    phone: str = Field(default="", max_length=24)
     hours: Optional[int] = Field(default=None, ge=1, le=168)
+
+
+class MailBody(BaseModel):
+    user: str = Field(max_length=254)
+    password: str = Field(max_length=64)
 
 
 class UserStatusBody(BaseModel):
@@ -407,7 +413,26 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     @app.post("/admin/invites")
     def create_invite(body: InviteBody, session: Session = Depends(admin)):
-        return svc().create_admin_invite(session, body.email, body.hours)
+        web = getattr(app.state, "web", None)
+        status = web.status() if web and web.enabled else None
+        web_url = status["urls"][1] if status and len(status["urls"]) > 1 else ""
+        return svc().create_admin_invite(session, body.email, body.hours, body.phone, web_url)
+
+    @app.get("/admin/mail")
+    def mail_status(_: Session = Depends(admin)):
+        return svc().mail_status()
+
+    @app.post("/admin/mail")
+    def mail_set(body: MailBody, session: Session = Depends(admin)):
+        return svc().set_mail(session, body.user, body.password)
+
+    @app.post("/admin/mail/clear")
+    def mail_clear(session: Session = Depends(admin)):
+        return svc().clear_mail(session)
+
+    @app.post("/admin/mail/test")
+    def mail_test(session: Session = Depends(admin)):
+        return svc().send_test_email(session)
 
     @app.post("/admin/invites/{invite_id}/revoke")
     def revoke_invite(invite_id: str, session: Session = Depends(admin)):

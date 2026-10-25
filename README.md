@@ -11,7 +11,8 @@ Automated restroom hygiene monitoring · STI College Caloocan
 - **Janitors**: My jobs (big cards: *I'll take it* → *Done*, same as texting OK/DONE) ·
   Report a problem (tap the restroom, tap what's wrong) · Live sensors · My account.
 - **SMS**: alerts, two-way OK/DONE replies, escalation, SIM promo reminders (GSM modem).
-- **Public pages** (GitHub Pages): QR report page and janitor sign-up link.
+- **Public pages** (GitHub Pages, same design): https://aureo-clean.github.io/aureoclean/ —
+  `report/` (QR report page), `login/` (janitor SMS sign-up), `qr/posters.html` (printable QR posters).
 
 ```
 Pi window (desktop/shell.py) ─┐
@@ -227,6 +228,18 @@ saves a printable summary (on the Pi both go to ~/Documents).
 
 Janitors see open jobs as big cards. **I'll take it** and **Done** do the same as texting
 `OK 12` / `DONE 12`; whichever comes first counts, and someone else's job shows as "X is on it".
+
+## Admin invites by email
+
+People → Invites → **Invite admin** emails a one-time code to the new administrator (and texts
+it, if you add their mobile number). They register on the sign-in screen under **Admin invite
+code**, on the Pi or on the Wi-Fi website, using the same email address.
+
+Set up email once in **System → SMS & email → Email** with a Gmail account and a Gmail **app
+password** (Google Account → Security → turn on 2-Step Verification → App passwords → create one
+for "AureoClean"; copy the 16 letters). The app password is stored on the Pi only
+(`~/.config/aureoclean/mail.json`, readable by you only). Without email set up, the code is
+shown on screen to pass on yourself.
 
 ## Website on Wi-Fi
 

@@ -389,7 +389,7 @@ export function peopleView(_p, query) {
   const view = h('div', { class: 'stack enter' }, pageHead('People', action), h('div', null, seg), body);
   function draw() {
     action.replaceChildren(tab === 'invites'
-      ? h('button', { class: 'btn primary sm', type: 'button', onclick: () => inviteDialog(draw) }, icon('plus'), 'Create invite') : '');
+      ? h('button', { class: 'btn primary sm', type: 'button', onclick: () => inviteDialog(draw) }, icon('plus'), 'Invite admin') : '');
     if (tab === 'requests') requestsPanel(body, seg);
     else if (tab === 'users') usersPanel(body);
     else invitesPanel(body);
@@ -537,7 +537,7 @@ function deleteDialog(u, after) {
 
 function invitesPanel(body) {
   fill(body, () => get('/admin/invites'), (rows) => [
-    h('p', { class: 'small muted' }, 'An invite code lets a new administrator register on the sign-in screen ("Admin invite code").'),
+    h('p', { class: 'small muted' }, 'Invite a new administrator: they get a one-time code by email (and text, if you add their number) and register on the sign-in screen under "Admin invite code".'),
     rows.length ? h('div', { class: 'card flush' }, h('div', { class: 'list' }, rows.map((r) => {
       const revoke = r.status === 'active' ? h('button', { class: 'btn danger sm', type: 'button' }, 'Cancel') : null;
       if (revoke) {
@@ -558,21 +558,80 @@ function invitesPanel(body) {
 
 function inviteDialog(after) {
   modal((close) => {
-    const email = field('Their email (optional)', { type: 'email', hint: 'If you fill this in, only that email can use the code.' });
+    const email = field('Their email', { type: 'email', placeholder: 'name@gmail.com', hint: 'The code is emailed to them, and only this email can use it.' });
+    const phone = field('Their mobile (optional)', { type: 'tel', placeholder: '0917 123 4567', inputmode: 'tel', hint: 'Also text them the code.' });
     const hours = select('Expires after', [['24', '1 day'], ['48', '2 days'], ['72', '3 days'], ['168', '1 week']], '48');
     const msg = message();
-    const make = h('button', { class: 'btn primary', type: 'button' }, 'Create invite');
-    make.addEventListener('click', () => busy(make, 'Creating…', async () => {
+    const make = h('button', { class: 'btn primary', type: 'button' }, 'Send invite');
+    cached('mail', () => get('/admin/mail'), 30000).then((m) => {
+      if (!m.configured) say(msg, 'Email isn\'t set up yet, so the code won\'t be emailed: you\'ll see it here to pass on (or add a mobile number to text it). Set up email in System → SMS & email.', 'warn');
+    }).catch(() => {});
+    make.addEventListener('click', () => busy(make, 'Sending…', async () => {
       try {
-        const r = await post('/admin/invites', { email: email.input.value, hours: Number(hours.input.value) });
+        const r = await post('/admin/invites', { email: email.input.value, phone: phone.input.value, hours: Number(hours.input.value) }, { timeout: 90000 });
         close();
-        modal((c2) => [h('h2', null, 'Invite code'), h('p', { class: 'small muted' }, `Give this to the new administrator. It expires ${when(r.expiresAt)} and is shown only now.`),
-          h('div', { class: 'code-box' }, r.code), h('div', { class: 'actions' }, h('button', { class: 'btn primary', onclick: () => c2() }, 'Done'))]);
+        const lines = [];
+        if (r.emailed) lines.push(h('div', { class: 'msg success' }, `Emailed to ${r.email}. Ask them to check Spam too.`));
+        else if (r.email && r.emailError) lines.push(h('div', { class: 'msg warn' }, r.emailError));
+        if (r.texted) lines.push(h('div', { class: 'msg success' }, 'Texted to their mobile.'));
+        else if (r.smsError) lines.push(h('div', { class: 'msg warn' }, `Couldn't text it: ${r.smsError}`));
+        modal((c2) => [h('h2', null, r.emailed ? 'Invite sent' : 'Invite code'), ...lines,
+          h('p', { class: 'small muted' }, `${r.emailed || r.texted ? 'Keep this in case they need it again' : 'Give this to the new administrator'} — it's shown only now and works once, until ${when(r.expiresAt)}.`),
+          h('div', { class: 'code-box' }, r.code),
+          h('p', { class: 'small muted' }, 'They register on the sign-in screen under "Admin invite code" (on the Pi, or on the Wi-Fi website).'),
+          h('div', { class: 'actions' }, h('button', { class: 'btn primary', onclick: () => c2() }, 'Done'))]);
         after();
       } catch (err) { say(msg, err.message, 'error'); }
     }));
-    return [h('h2', null, 'Create an admin invite'), email, hours, msg,
+    enterSubmits([email, phone], make);
+    return [h('h2', null, 'Invite an administrator'), email, phone, hours, msg,
       h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => close() }, 'Cancel'), make)];
+  });
+}
+
+function mailCard(st, after) {
+  const msg = message();
+  if (!st.configured) {
+    return h('section', { class: 'card stack tight' }, h('h2', null, 'Email (admin invites)'),
+      h('p', { class: 'small muted' }, 'Send admin invites by email from a Gmail account. You need a Gmail "app password" (Google Account → Security → 2-Step Verification → App passwords).'),
+      h('div', null, h('button', { class: 'btn primary sm', type: 'button', onclick: () => mailDialog(after) }, 'Set up email')), msg);
+  }
+  const test = h('button', { class: 'btn sm', type: 'button' }, 'Send me a test');
+  test.addEventListener('click', () => busy(test, 'Sending…', async () => {
+    try { const r = await post('/admin/mail/test', {}, { timeout: 60000 }); say(msg, r.message, 'success'); }
+    catch (err) { say(msg, err.message, 'error'); }
+  }));
+  const remove = h('button', { class: 'btn danger sm', type: 'button' }, 'Remove');
+  remove.addEventListener('click', async () => {
+    if (!(await confirmBox('Stop sending email?', 'Invites will show the code on screen only.', { ok: 'Remove', danger: true }))) return;
+    try { await post('/admin/mail/clear'); invalidate('mail'); after(); } catch (err) { say(msg, err.message, 'error'); }
+  });
+  return h('section', { class: 'card stack tight' }, h('h2', null, 'Email (admin invites)'),
+    h('div', { class: 'row small' }, h('span', { class: 'dot ok' }), `Invites are sent from ${st.user}`),
+    h('div', { class: 'row wrap' }, test, h('button', { class: 'btn sm', type: 'button', onclick: () => mailDialog(after, st.user) }, 'Change'), remove), msg);
+}
+
+function mailDialog(after, user = '') {
+  modal((close) => {
+    const addr = field('Gmail address', { type: 'email', value: user, placeholder: 'aureoclean.sti@gmail.com', autocomplete: 'off' });
+    const pass = field('App password', { type: 'password', placeholder: 'abcd efgh ijkl mnop', autocomplete: 'off',
+      hint: '16 letters from Google Account → Security → 2-Step Verification → App passwords. Not your normal Gmail password.' });
+    const msg = message();
+    const save = h('button', { class: 'btn primary', type: 'button' }, 'Save & send a test');
+    save.addEventListener('click', () => busy(save, 'Checking…', async () => {
+      try {
+        await post('/admin/mail', { user: addr.input.value, password: pass.input.value });
+        invalidate('mail');
+        try {
+          const t = await post('/admin/mail/test', {}, { timeout: 60000 });
+          close(); toast(t.message, 'success'); after();
+        } catch (err) { say(msg, `Saved, but the test didn't go through: ${err.message}`, 'error'); after(); }
+      } catch (err) { say(msg, err.message, 'error'); }
+    }));
+    enterSubmits([addr, pass], save);
+    return [h('h2', null, 'Set up email'),
+      h('p', { class: 'small muted' }, 'AureoClean sends admin invites from this Gmail account. The app password stays on the Pi only.'),
+      addr, pass, msg, h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => close() }, 'Cancel'), save)];
   });
 }
 
@@ -580,7 +639,7 @@ function inviteDialog(after) {
 export function systemView(_p, query) {
   let tab = query.get('tab') || 'health';
   const body = h('div', { class: 'stack' });
-  const seg = segmented([['health', 'Health'], ['sms', 'SMS'], ['kiosk', shell.isPi ? 'Kiosk & web' : 'Website'], ['log', 'Activity log']], tab, (id) => {
+  const seg = segmented([['health', 'Health'], ['sms', 'SMS & email'], ['kiosk', shell.isPi ? 'Kiosk & web' : 'Website'], ['log', 'Activity log']], tab, (id) => {
     tab = id; history.replaceState(null, '', `#/system?tab=${id}`); draw();
   }, { label: 'System sections' });
   const view = h('div', { class: 'stack enter' }, pageHead('System'), h('div', null, seg), body);
@@ -607,7 +666,7 @@ function healthPanel(body, force = false, balance = false) {
 }
 
 function smsPanel(body) {
-  fill(body, () => Promise.all([get('/admin/sms/settings'), get('/admin/sms/promo')]), ([st, promo]) => {
+  fill(body, () => Promise.all([get('/admin/sms/settings'), get('/admin/sms/promo'), cached('mail', () => get('/admin/mail'), 0)]), ([st, promo, mail]) => {
     const onModem = st.mode === 'modem';
     const state = h('div', { class: 'row small' }, h('span', { class: `dot ${onModem ? 'ok' : 'warn'}` }), st.label);
     const out = message();
@@ -655,6 +714,7 @@ function smsPanel(body) {
           h('div', { class: 'row wrap' }, find, check, test), h('div', { class: 'row', style: { alignItems: 'flex-end' } }, h('div', { class: 'grow' }, to), send)),
         promoCard(promo, () => smsPanel(body))),
       out,
+      mailCard(mail, () => smsPanel(body)),
       h('section', { class: 'card stack tight' }, h('h2', null, 'Try a reply'),
         h('p', { class: 'small muted' }, 'Pretend a janitor texted back, e.g. OK 12 or DONE 12. Real replies are read from the SIM every 20 seconds.'),
         h('div', { class: 'row wrap', style: { alignItems: 'flex-end' } }, h('div', { class: 'grow' }, from), h('div', { style: { width: '140px' } }, text), tryBtn)),
@@ -769,7 +829,7 @@ const ACTIONS = {
   janitor_contact_approved: 'Janitor added as SMS contact', report_created: 'Report created', report_updated: 'Report updated',
   public_report_dropped: 'Public report dropped (too many)', admin_email_verified: 'Admin email verified', verification_email_sent: 'Verification email sent',
   lock_pin_set: 'Screen-lock PIN set', lock_pin_removed: 'Screen-lock PIN removed', unlock_locked_out: 'Signed out after wrong PINs',
-  kiosk_exit: 'Left kiosk mode', sim_promo_set: 'SIM promo updated', sim_promo_cleared: 'SIM promo removed',
+  kiosk_exit: 'Left kiosk mode', admin_invite_emailed: 'Admin invite emailed', mail_set_up: 'Email set up', mail_removed: 'Email removed', sim_promo_set: 'SIM promo updated', sim_promo_cleared: 'SIM promo removed',
   wifi_website_on: 'Wi-Fi website turned on', wifi_website_off: 'Wi-Fi website turned off',
 };
 

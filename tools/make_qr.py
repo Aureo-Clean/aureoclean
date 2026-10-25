@@ -49,12 +49,12 @@ def main() -> int:
     logo = (ROOT / "docs" / "assets" / "logo.svg").read_text()
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Poster {html.escape(code)}</title>
 <style>{poster}</style></head><body><section class="poster">
-<header><div class="logo">{logo}</div><div><p class="name">Aureo<span>Clean</span></p>
+<header><div class="logo">{logo}</div><div><p class="name"><span>Aureo</span>Clean</p>
 <p class="tag">AUTOMATED HYGIENE MONITORING &amp; MAINTENANCE SYSTEM</p></div></header>
 <h1>Something wrong in this restroom?</h1>
 <p class="sub">Scan to tell the maintenance team. It takes 30 seconds, and you don't need an app.</p>
 <img class="qr" src="{svg_path.name}" alt="QR code">
-<p class="place">📍 {html.escape(name)}</p>
+<p class="place">{html.escape(name)}</p>
 <ul><li>No soap or tissue</li><li>Dirty or smelly</li><li>Clogged, leaking or broken</li><li>Emergency</li></ul>
 <p class="url">{html.escape(url.replace("https://", ""))}</p></section></body></html>"""
     poster_path = out / f"poster-{code}.html"

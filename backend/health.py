@@ -108,6 +108,13 @@ class HealthMonitor:
             return _check("promo", "SIM promo", "warn", f"{p['name']} ends {left} ({ends}). Register again soon.")
         return _check("promo", "SIM promo", "ok", f"{p['name']}: {days} days left (ends {ends})")
 
+    def email(self):
+        st = self.svc.mailer.public_status()
+        if not st["configured"]:
+            return _check("email", "Email (invites)", "off",
+                          "Not set up: admin invite codes are shown on screen only. System → SMS & email → Email.")
+        return _check("email", "Email (invites)", "ok", f"Invites are sent from {st['user']}")
+
     def sending(self):
         t = self.svc.send_tracker
         if t.failures_in_a_row:
@@ -158,7 +165,7 @@ class HealthMonitor:
 
     # ------------------------------------------------------------------ all
     def report(self, force_balance: bool = False) -> dict:
-        checks = [self.internet(), self.cloud(), self.modem(), self.promo(), self.sending()]
+        checks = [self.internet(), self.cloud(), self.modem(), self.promo(), self.sending(), self.email()]
         bal = self.balance(force_balance)
         if bal["status"] != "off" or self.balance_code:  # optional: only shown once a balance code is set
             checks.append(bal)

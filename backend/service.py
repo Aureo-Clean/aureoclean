@@ -60,6 +60,7 @@ from .security import (
     verify_secret,
 )
 from .two_way import alert_text
+from .mailer import Mailer, MailError
 from .sms import (
     LogSender,
     ModemSender,
@@ -225,6 +226,45 @@ def _check(value, validator):
         raise BadRequest(str(exc)) from exc
 
 
+def invite_email(inviter: str, code: str, until: str, email: str, web_url: str = "") -> tuple[str, str, str]:
+    """The admin invite email: subject, plain text and HTML (inline styles: email apps strip the rest)."""
+    import html as _html
+
+    first = (f"Go to the AureoClean screen, or open {web_url} on a phone or laptop connected to the school Wi-Fi."
+             if web_url else "Go to the AureoClean screen (the Raspberry Pi touchscreen), or the AureoClean website "
+                             "on the school Wi-Fi if an administrator has turned it on.")
+    steps = [
+        first,
+        "On the sign-in screen, choose \u201cAdmin invite code\u201d.",
+        f"Enter the code, your name, a username, this email address ({email}) and a password.",
+        "We'll email you a verification link. Open it, then sign in.",
+    ]
+    subject = "You're invited to AureoClean as an administrator"
+    text = (f"Hi,\n\n{inviter} invited you to help manage AureoClean, the restroom monitoring system at "
+            f"STI College Caloocan.\n\nYour invite code: {code}\nIt works once, until {until}.\n\n"
+            + "\n".join(f"{i}. {t}" for i, t in enumerate(steps, 1))
+            + "\n\nIf you weren't expecting this, you can ignore this email.\n\n— AureoClean")
+    e = _html.escape
+    items = "".join(f'<li style="margin:0 0 8px">{e(t)}</li>' for t in steps)
+    html = f"""<!doctype html><html><body style="margin:0;background:#F3F6FA;font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;color:#0F1E36">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3F6FA;padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#FFFFFF;border:1px solid #E3E9F1;border-radius:16px">
+<tr><td style="background:#14336E;border-radius:16px 16px 0 0;padding:18px 24px;color:#FFFFFF;font-size:20px;font-weight:700">
+<span style="color:#F2C14E">Aureo</span>Clean</td></tr>
+<tr><td style="padding:24px">
+<h1 style="margin:0 0 8px;font-size:20px">You're invited as an administrator</h1>
+<p style="margin:0 0 18px;color:#5B6B80;font-size:14px;line-height:1.5">{e(inviter)} invited you to help manage AureoClean,
+the restroom monitoring system at STI College Caloocan.</p>
+<div style="background:#F0F4FA;border-radius:12px;padding:16px;text-align:center;margin:0 0 6px">
+<div style="font-size:12px;color:#5B6B80;margin-bottom:6px">Your invite code</div>
+<div style="font-family:Menlo,Consolas,monospace;font-size:24px;font-weight:700;letter-spacing:3px;color:#14336E">{e(code)}</div></div>
+<p style="margin:0 0 18px;font-size:12px;color:#5B6B80;text-align:center">Works once, until {e(until)}.</p>
+<ol style="margin:0 0 16px;padding-left:20px;font-size:14px;line-height:1.5">{items}</ol>
+<p style="margin:0;font-size:12px;color:#5B6B80">Not expecting this? You can ignore this email.</p>
+</td></tr></table></td></tr></table></body></html>"""
+    return subject, text, html
+
+
 def public_locations() -> list[dict]:
     """The restroom list from docs/assets/config.js (the file the QR codes and report page use)."""
     path = Path(__file__).resolve().parent.parent / "docs" / "assets" / "config.js"
@@ -282,6 +322,7 @@ class AureoService:
         self.send_tracker = SendTracker()
         self.sms = sms or LogSender(settings.log_dir / "sms_outbox.log")
         self.sim_promo = SimPromo(settings.sms_settings_file.with_name("sim_promo.json"))
+        self.mailer = Mailer(settings.sms_settings_file.with_name("mail.json"))
         self.store = store
         self.identity = identity
         prefix = settings.collection_prefix
@@ -763,8 +804,16 @@ class AureoService:
         raise BadRequest("Wrong PIN." if pin_hash else "Wrong password.")
 
     # ============================================================ admin invites
-    def create_admin_invite(self, admin: Session, email: str = "", hours: Optional[int] = None) -> dict:
+    def create_admin_invite(self, admin: Session, email: str = "", hours: Optional[int] = None, phone: str = "",
+                            web_url: str = "") -> dict:
+        """Make a one-time invite code for a new administrator, and send it to them:
+        by email (when email is set up) and/or by SMS (when a mobile number is given)."""
         email = _check(email, validate_email) if (email or "").strip() else ""
+        if (phone or "").strip():
+            try:
+                phone = normalize_phone(phone)
+            except ValueError as exc:
+                raise BadRequest(str(exc))
         hours = hours or self.settings.admin_invite_hours
         hours = max(1, min(int(hours), 168))
         code = generate_code(groups=3, size=5)
@@ -775,6 +824,7 @@ class AureoService:
             invite_id,
             {
                 "email": email or None,
+                "phone": mask_phone(phone) if phone else None,
                 "status": "active",
                 "createdBy": {"uid": admin.uid, "username": admin.username},
                 "createdAt": iso(utcnow()),
@@ -782,7 +832,57 @@ class AureoService:
             },
         )
         self.audit("admin_invite_created", admin.actor, invite_id[:12], {"email": email or None, "expiresAt": expires})
-        return {"inviteId": invite_id, "code": code, "email": email or None, "expiresAt": expires}
+        result = {"inviteId": invite_id, "code": code, "email": email or None, "expiresAt": expires,
+                  "emailed": False, "emailError": None, "texted": False, "smsError": None}
+        inviter = admin.full_name or admin.username
+        when = parse_iso(expires).astimezone(PH_TZ).strftime("%b %d, %I:%M %p").replace(" 0", " ")
+        if email:
+            if not self.mailer.configured:
+                result["emailError"] = "Email isn't set up yet, so nothing was sent. Give them the code yourself."
+            else:
+                try:
+                    subject, text, html = invite_email(inviter, code, when, email, web_url)
+                    self.mailer.send(email, subject, text, html)
+                    result["emailed"] = True
+                    self.audit("admin_invite_emailed", admin.actor, invite_id[:12], {"email": email})
+                except MailError as exc:
+                    result["emailError"] = str(exc)
+        if phone:
+            try:
+                self.sms.send(phone, f"AureoClean: {inviter.split()[0]} invited you as an admin. Code {code} "
+                                     f"(until {when}). On AureoClean choose Admin invite code."[:160])
+                result["texted"] = True
+            except SmsError as exc:
+                result["smsError"] = exc.message
+        return result
+
+    # ------------------------------------------------------------------ email set-up
+    def mail_status(self) -> dict:
+        return self.mailer.public_status()
+
+    def set_mail(self, admin: Session, user: str, password: str) -> dict:
+        try:
+            self.mailer.save(user, password)
+        except MailError as exc:
+            raise BadRequest(str(exc))
+        self.audit("mail_set_up", admin.actor, None, {"user": user.strip()})
+        return self.mailer.public_status()
+
+    def clear_mail(self, admin: Session) -> dict:
+        self.mailer.clear()
+        self.audit("mail_removed", admin.actor, None)
+        return self.mailer.public_status()
+
+    def send_test_email(self, admin: Session) -> dict:
+        if not admin.email:
+            raise BadRequest("Your account has no email address.")
+        try:
+            self.mailer.send(admin.email, "AureoClean test email",
+                             f"Hi {admin.full_name or admin.username},\n\nEmail from AureoClean is working. "
+                             "Admin invites will be sent from this address.\n\n— AureoClean")
+        except MailError as exc:
+            raise ServiceUnavailable(str(exc))
+        return {"message": f"Test email sent to {admin.email}. Check the inbox (and Spam)."}
 
     def list_invites(self) -> list[dict]:
         out = []

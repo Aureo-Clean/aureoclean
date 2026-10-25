@@ -5,21 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; connect-src 'self' https://firestore.googleapis.com; base-uri 'none'; form-action 'none'">
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; connect-src 'self' https://firestore.googleapis.com; font-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Report a Restroom Problem · AureoClean</title>
 <link rel="icon" href="../assets/icon.png">
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
+<header class="top"><div class="inner">
+  <div class="mark"><img src="../assets/logo.svg" alt=""></div>
+  <div><div class="word"><span>Aureo</span>Clean</div><div class="tagline">Restroom hygiene monitoring · STI College Caloocan</div></div>
+</div></header>
 <a class="skip" href="#issues-fs">Skip to the questions</a>
-<main class="wide">
-  <header class="brand">
-    <img src="../assets/logo.svg" alt="">
-    <div>
-      <p class="name">Aureo<span>Clean</span></p>
-      <p class="tag">AUTOMATED HYGIENE MONITORING &amp; MAINTENANCE SYSTEM</p>
-    </div>
-  </header>
+<main>
 
   <section class="card" id="form-card" aria-labelledby="t">
     <h1 id="t">Report a restroom problem</h1>
@@ -28,9 +25,9 @@
     <form id="form" novalidate>
       <!-- 1. Where -->
       <fieldset>
-        <legend>1. Which restroom?</legend>
+        <legend><span class="n">1</span>Which restroom?</legend>
         <div class="place" id="place-fixed" hidden>
-          <span>📍 <b id="place-name"></b></span>
+          <span class="where"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg><b id="place-name"></b></span>
           <button type="button" class="linkbtn" id="place-change">Change</button>
         </div>
         <div id="place-pick">
@@ -44,8 +41,8 @@
 
       <!-- 2. What -->
       <fieldset id="issues-fs">
-        <legend>2. What's the problem? <span class="opt">(choose all that apply)</span></legend>
-        <div class="choices two" id="issues"></div>
+        <legend><span class="n">2</span>What's the problem? <span class="opt">(choose all that apply)</span></legend>
+        <div class="choices" id="issues"></div>
         <div class="alert danger" id="emergency-note" hidden role="alert">
           <b>If anyone is in danger, tell the guard or call 911 now.</b> This report also alerts the
           maintenance team immediately.
@@ -54,19 +51,19 @@
 
       <!-- 3. How urgent -->
       <fieldset>
-        <legend>3. How urgent is it?</legend>
-        <div class="choices" id="urgency"></div>
+        <legend><span class="n">3</span>How urgent is it?</legend>
+        <div class="choices stack" id="urgency"></div>
       </fieldset>
 
       <!-- 4. Cleanliness rating -->
       <fieldset>
-        <legend>4. How clean is the restroom right now? <span class="opt">(optional)</span></legend>
+        <legend><span class="n">4</span>How clean is the restroom right now? <span class="opt">(optional)</span></legend>
         <div class="rating" id="rating" role="radiogroup" aria-label="Cleanliness from 1 (very dirty) to 5 (very clean)"></div>
         <div class="hint">1 = very dirty · 5 = very clean</div>
       </fieldset>
 
       <!-- 5. Details -->
-      <label class="label" for="details">5. Anything else we should know? <span class="opt">(optional)</span>
+      <label class="label" for="details"><span class="n">5</span>Anything else we should know? <span class="opt">(optional)</span>
         <span class="counter" id="count">0/500</span></label>
       <textarea id="details" maxlength="500" placeholder="e.g. The second cubicle's toilet keeps running."></textarea>
 
@@ -94,7 +91,7 @@
   </section>
 
   <section class="card done" id="done-card" hidden aria-live="polite">
-    <div class="tick" aria-hidden="true">✓</div>
+    <div class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></div>
     <h1>Thank you! Report sent.</h1>
     <p class="lead">Reference <span class="ref" id="ref"></span> · <span id="done-place"></span></p>
     <p class="lead" id="done-emergency" hidden><b>The maintenance team has been alerted.</b>
@@ -102,7 +99,7 @@
     <button class="btn ghost" type="button" id="again">Report another problem</button>
   </section>
 
-  <footer>STI College Caloocan · AureoClean</footer>
+  <footer>AureoClean · STI College Caloocan</footer>
 </main>
 
 <script src="../assets/config.js"></script>
@@ -120,7 +117,7 @@
 
   // ---- 1. location
   var sel = $("location");
-  sel.innerHTML = '<option value="">Choose a restroom…</option>';
+  var first = document.createElement("option"); first.value = ""; first.textContent = "Choose a restroom…"; sel.appendChild(first);
   locations.forEach(function (l) { var o = document.createElement("option"); o.value = l.code; o.textContent = l.name; sel.appendChild(o); });
   var other = document.createElement("option"); other.value = "__other"; other.textContent = "Somewhere else…"; sel.appendChild(other);
   sel.addEventListener("change", function () { $("location-other").hidden = sel.value !== "__other"; });
@@ -148,13 +145,16 @@
   var schemaReady = fetch("../assets/issues.json", { cache: "no-cache" }).then(function (r) { return r.json(); })
     .then(function (schema) {
       schema.issues.forEach(function (it) {
-        $("issues").appendChild(choice("checkbox", "issue", it.code, it.label, it.code === "emergency" ? "danger" : ""));
+        var chip = choice("checkbox", "issue", it.code, it.code === "emergency" ? "Emergency (fire, smoke, injury, flooding)" : it.label, it.code === "emergency" ? "danger" : "");
+        $("issues").appendChild(chip);
       });
       schema.urgency.forEach(function (u) { $("urgency").appendChild(choice("radio", "urgency", u.code, u.label)); });
       document.querySelector('input[name=urgency][value=medium]').checked = true;
       for (var n = 1; n <= 5; n++) {
-        var c = choice("radio", "rating", String(n), ""); c.querySelector("span").innerHTML =
-          "<b>" + n + "</b>" + ["Very dirty", "Dirty", "OK", "Clean", "Very clean"][n - 1];
+        var c = choice("radio", "rating", String(n), "");
+        var num = document.createElement("b"); num.textContent = String(n);
+        c.querySelector("span").appendChild(num);
+        c.querySelector("span").appendChild(document.createTextNode(["Very dirty", "Dirty", "OK", "Clean", "Very clean"][n - 1]));
         c.querySelector("input").setAttribute("aria-label", n + " of 5");
         $("rating").appendChild(c);
       }
