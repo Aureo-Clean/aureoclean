@@ -9,6 +9,11 @@ from .sms import SavedSmsSettings, build_sender
 def build_service(settings: Settings | None = None) -> AureoService:
     settings = settings or load_settings()
     if settings.mode == "firebase":
+        import os
+
+        # Use the Pi's own DNS lookups for Firebase's connection (gRPC's built-in resolver
+        # can stall on some home/school networks, which shows up as "deadline exceeded").
+        os.environ.setdefault("GRPC_DNS_RESOLVER", "native")
         from .providers.firebase import FirebaseBackend
 
         backend = FirebaseBackend(

@@ -34,7 +34,7 @@ class ApiClient:
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _call(self, method: str, path: str, body: Optional[dict] = None, query: Optional[dict] = None,
-              timeout: float = 30) -> Any:
+              timeout: float = 50) -> Any:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v not in (None, "")})

@@ -19,22 +19,27 @@ from .base import AccountDisabled, AccountExists, AlreadyExists, ProviderError
 SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
 SEND_OOB_URL = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode"
 
-# Every Firestore call gives up after this long instead of hanging (Google's default
-# can wait a minute or more on a flaky Wi-Fi), so the app gets an answer in time.
-FIRESTORE_TIMEOUT = 8      # one attempt
-FIRESTORE_DEADLINE = 15    # all retries together
-HTTP_TIMEOUT = (5, 10)     # Firebase sign-in: connect, read
+# Firestore calls: each attempt may take up to FIRESTORE_TIMEOUT seconds (the Pi's Wi-Fi can be
+# slow to reconnect after a quiet spell). A timed-out or dropped attempt is retried once more on
+# a fresh connection, and everything together gives up after FIRESTORE_DEADLINE, so the app
+# always gets an answer instead of hanging.
+FIRESTORE_TIMEOUT = 20
+FIRESTORE_DEADLINE = 45
+HTTP_TIMEOUT = (10, 20)    # Firebase sign-in: connect, read
 HTTP_IDLE_RESET = 90       # seconds: after this, use a new connection (routers drop idle ones)
 
 
 def _retry():
+    from google.api_core import exceptions as gexc
     from google.api_core import retry as r
+
+    def worth_retrying(exc) -> bool:
+        return r.if_transient_error(exc) or isinstance(exc, (gexc.DeadlineExceeded, gexc.ServiceUnavailable))
+
     try:
-        return r.Retry(initial=0.3, maximum=3.0, multiplier=2.0, timeout=FIRESTORE_DEADLINE,
-                       predicate=r.if_transient_error)
+        return r.Retry(initial=0.5, maximum=4.0, multiplier=2.0, timeout=FIRESTORE_DEADLINE, predicate=worth_retrying)
     except TypeError:  # older google-api-core
-        return r.Retry(initial=0.3, maximum=3.0, multiplier=2.0, deadline=FIRESTORE_DEADLINE,
-                       predicate=r.if_transient_error)
+        return r.Retry(initial=0.5, maximum=4.0, multiplier=2.0, deadline=FIRESTORE_DEADLINE, predicate=worth_retrying)
 
 
 def _friendly(exc: Exception) -> ProviderError:
@@ -48,7 +53,10 @@ def _friendly(exc: Exception) -> ProviderError:
     if "PERMISSION_DENIED" in text or "403" in text[:10]:
         return ProviderError("The service-account key doesn't have permission for Firestore. Download a new key "
                              "from Firebase Console > Project settings > Service accounts.")
-    if any(t in text for t in ("UNAVAILABLE", "DEADLINE_EXCEEDED", "503", "Failed to connect", "failed to connect")):
+    if any(t in text for t in ("DEADLINE_EXCEEDED", "Deadline Exceeded", "504", "timed out", "Timeout")):
+        return ProviderError("Firebase took too long to answer: the Pi's internet is slow or just dropped. "
+                             "Wait a moment and try again.")
+    if any(t in text for t in ("UNAVAILABLE", "503", "Failed to connect", "failed to connect")):
         return ProviderError("Cannot reach Firebase. Check the Pi's internet connection.")
     return ProviderError(f"Firebase error: {text.splitlines()[0][:200]}")
 
