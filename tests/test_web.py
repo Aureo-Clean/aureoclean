@@ -8,7 +8,8 @@ from backend import web
 
 class WhoMayConnect(unittest.TestCase):
     def test_same_network_only(self):
-        for ok in ("192.168.1.23", "10.0.0.5", "172.16.4.2", "127.0.0.1", "::1", "fe80::1%wlan0", "::ffff:192.168.0.9"):
+        for ok in ("192.168.1.23", "10.0.0.5", "172.16.4.2", "100.72.1.9", "127.0.0.1", "::1", "fe80::1%wlan0",
+                   "::ffff:192.168.0.9", "fd00::5"):
             self.assertTrue(web.is_private(ok), ok)
         for bad in ("8.8.8.8", "1.1.1.1", "2001:4860:4860::8888", "", "not-an-ip"):
             self.assertFalse(web.is_private(bad), bad)

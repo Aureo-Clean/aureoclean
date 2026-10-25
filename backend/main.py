@@ -415,7 +415,7 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def create_invite(body: InviteBody, session: Session = Depends(admin)):
         web = getattr(app.state, "web", None)
         status = web.status() if web and web.enabled else None
-        web_url = status["urls"][1] if status and len(status["urls"]) > 1 else ""
+        web_url = status["urls"][0] if status else ""
         return svc().create_admin_invite(session, body.email, body.hours, body.phone, web_url)
 
     @app.get("/admin/mail")
@@ -480,10 +480,14 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
         svc().audit("wifi_website_" + ("on" if body.enabled else "off"), session.actor, None)
         return status
 
+    @app.get("/admin/web/test")
+    def web_selftest(_: Session = Depends(admin)):
+        return web_access().self_test()
+
     @app.get("/admin/web/qr.svg")
     def web_qr(_: Session = Depends(admin)):
         urls = web_access().status()["urls"]
-        svg = qr_svg(urls[1] if len(urls) > 1 else urls[0])
+        svg = qr_svg(urls[0])  # the number address: works on every phone
         if svg is None:
             return JSONResponse({"detail": "QR codes need the segno package (run Update AureoClean)."}, status_code=404)
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})

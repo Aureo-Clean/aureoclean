@@ -60,7 +60,9 @@ def is_private(host: str) -> bool:
         return host == "testclient"
     if ip.version == 6 and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
-    return ip.is_private or ip.is_loopback or ip.is_link_local
+    # Anything that isn't a public internet address: home/school ranges, the 100.64.x.x
+    # range some school and carrier networks use, link-local, the Pi itself.
+    return not ip.is_global or ip.is_loopback or ip.is_link_local
 
 
 class RateLimit:
@@ -181,10 +183,38 @@ class WebAccess:
         return self.status()
 
     def status(self) -> dict:
+        # The number address first: many Android phones can't open ".local" names.
         host = socket.gethostname()
-        urls = [f"http://{host}.local:{self.port}"] + [f"http://{a}:{self.port}" for a in lan_addresses()]
+        urls = [f"http://{a}:{self.port}" for a in lan_addresses()] + [f"http://{host}.local:{self.port}"]
         return {"enabled": self.enabled, "running": self.running, "port": self.port, "urls": urls,
                 "error": self.error}
+
+    def self_test(self) -> dict:
+        """Open the website from the Pi itself, through its Wi-Fi address. If this works but a
+        phone can't connect, the Wi-Fi network is blocking devices from reaching each other."""
+        import urllib.request
+
+        results = []
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for addr in lan_addresses() or ["127.0.0.1"]:
+            url = f"http://{addr}:{self.port}/health"
+            try:
+                with opener.open(url, timeout=4) as resp:
+                    results.append({"address": addr, "ok": resp.status == 200, "detail": f"answered ({resp.status})"})
+            except Exception as exc:  # noqa: BLE001
+                results.append({"address": addr, "ok": False, "detail": type(exc).__name__})
+        ok = any(r["ok"] for r in results)
+        if not self.running:
+            verdict = "The Wi-Fi website isn't running. Turn it off and on again; if it stays off, restart the Pi."
+        elif ok:
+            verdict = ("The website works on this Pi's network address. If a phone still can't open it: make sure "
+                       "the phone is on the SAME Wi-Fi as the Pi (not mobile data), and type the number address "
+                       "exactly. If it still fails, this Wi-Fi blocks devices from reaching each other (common on "
+                       "school and public Wi-Fi): use a phone hotspot or a router you control.")
+        else:
+            verdict = ("The Pi can't reach its own website through the network: a firewall may be blocking port "
+                       f"{self.port}. If you installed one, run: sudo ufw allow {self.port}/tcp")
+        return {"ok": ok and self.running, "results": results, "verdict": verdict, "addresses": lan_addresses()}
 
 
 def qr_svg(text: str) -> Optional[str]:

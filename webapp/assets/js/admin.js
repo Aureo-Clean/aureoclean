@@ -775,6 +775,17 @@ function promoDialog(p, after) {
   });
 }
 
+function testRow(msg) {
+  const btn = h('button', { class: 'btn sm', type: 'button' }, 'Test connection');
+  btn.addEventListener('click', () => busy(btn, 'Testing…', async () => {
+    try {
+      const r = await get('/admin/web/test', { timeout: 30000 });
+      say(msg, r.verdict, r.ok ? 'success' : 'error');
+    } catch (err) { say(msg, err.message, 'error'); }
+  }));
+  return h('div', { class: 'row wrap' }, btn, h('span', { class: 'small muted' }, 'Checks the website from this Pi and explains what to do.'));
+}
+
 function kioskPanel(body) {
   fill(body, () => Promise.all([get('/admin/web'), cached('links', () => get('/links'), 60000)]), ([web, links]) => {
     const cards = [];
@@ -806,7 +817,8 @@ function kioskPanel(body) {
       h('div', { class: 'row' }, sw, h('b', null, web.enabled ? 'On' : 'Off')), stateLine,
       web.enabled && web.running ? h('div', { class: 'row', style: { alignItems: 'flex-start', gap: '12px' } }, h('div', { class: 'grow stack tight' },
         web.urls.slice(0, 3).map((u, i) => h('div', { class: 'url-box', style: i ? { fontSize: '12px', fontWeight: '500' } : {} }, u)),
-        h('p', { class: 'small muted' }, 'If the first address doesn\'t open, use the number one. Sign-in works the same as here.')), qr) : null, msg));
+        h('p', { class: 'small muted' }, 'Type the first address exactly (or scan the QR code) on a phone connected to the same Wi-Fi as the Pi — not mobile data.')), qr) : null,
+      web.enabled ? testRow(msg) : null, msg));
     const linkRow = (text, url) => h('button', { class: 'linkrow', type: 'button', onclick: () => openExternal(url) }, text, icon('external'));
     cards.push(h('section', { class: 'card' }, h('h2', { style: { marginBottom: '4px' } }, 'Websites'),
       links.filter((l) => l.key !== 'dashboard').map((l) => linkRow(l.title, l.url)),
