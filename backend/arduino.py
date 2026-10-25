@@ -1,7 +1,9 @@
 """Live sensor values from Arduino IoT Cloud, read with an API key.
 
-The app shows these as simple tiles (Home, Live sensors), so nobody has to sign
-in to Arduino Cloud: the Pi asks Arduino for the latest value of every variable.
+The app shows them on Home and in the full Live sensors view, so nobody has to
+sign in to Arduino Cloud: the Pi asks Arduino for the latest value of every
+variable. Each Arduino dashboard becomes a page with the same name ("Urinal",
+"Page 2", …) and the same widgets, drawn in AureoClean's style.
 
 Set up once in the app (Home → Live sensors → Connect Arduino Cloud) with the
 Client ID and Client Secret from https://app.arduino.cc/api-keys (Create API key).
@@ -19,6 +21,8 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -26,13 +30,34 @@ import requests
 
 API = "https://api2.arduino.cc"
 TOKEN_URL = f"{API}/iot/v1/clients/token"
-CACHE_SECONDS = 8          # several screens asking at once share one answer
+CACHE_SECONDS = 4          # several screens asking at once share one answer
+LAYOUT_SECONDS = 60        # dashboards (pages and widgets) change rarely
+HISTORY_SECONDS = 180      # small charts: last few hours, refreshed every 3 minutes
+HISTORY_HOURS = 6
+HISTORY_POINTS = 60
+HISTORY_MAX_SERIES = 16
 UNITS = {                  # Arduino Cloud variable types → unit shown after the number
     "TEMPERATURE_C": "°C", "TEMPERATURE": "°C", "TEMPERATURE_F": "°F", "HUMIDITY": "%", "RELATIVE_HUMIDITY": "%",
     "PERCENTAGE": "%", "LENGTH_C": "cm", "LENGTH_M": "m", "LENGTH_MM": "mm", "VOLUME_L": "L", "VOLUME_ML": "mL",
     "LUMINANCE": "lx", "ILLUMINANCE": "lx", "PRESSURE": "hPa", "DISTANCE": "cm", "VOLTAGE": "V", "CURRENT": "A",
     "POWER": "W", "ENERGY": "kWh", "FLOW_RATE": "L/min", "CONCENTRATION": "ppm", "GAS": "ppm", "SOUND": "dB",
+    "HOME_TEMPERATURE_C": "°C", "HOME_TEMPERATURE_F": "°F",
 }
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _simple_options(options) -> dict:
+    """Widget settings worth showing (min/max, step, note text …); nothing nested."""
+    out = {}
+    for k, v in (options or {}).items() if isinstance(options, dict) else ():
+        if isinstance(v, bool) or _is_number(v):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:300]
+    return out
 
 
 class ArduinoError(Exception):
@@ -53,7 +78,10 @@ class ArduinoCloud:
         self._token: Optional[str] = None
         self._token_until = 0.0
         self._cache: Optional[tuple[float, dict]] = None
+        self._layout: Optional[tuple[float, list]] = None
+        self._history: Optional[tuple[float, dict]] = None
         self._lock = threading.Lock()
+        self._history_lock = threading.Lock()
 
     # ------------------------------------------------------------------ settings
     def _saved(self) -> dict:
@@ -86,14 +114,14 @@ class ArduinoCloud:
             os.chmod(self.file, 0o600)
         except OSError:
             pass
-        self._token, self._cache = None, None
+        self._token, self._cache, self._layout, self._history = None, None, None, None
 
     def clear(self) -> None:
         try:
             self.file.unlink()
         except OSError:
             pass
-        self._token, self._cache = None, None
+        self._token, self._cache, self._layout, self._history = None, None, None, None
 
     # ------------------------------------------------------------------ API
     def _headers(self) -> dict:
@@ -124,9 +152,9 @@ class ArduinoCloud:
         self._token_until = time.monotonic() + max(30, int(data.get("expires_in", 300)) - 30)
         return self._token
 
-    def _get(self, path: str):
+    def _get(self, path: str, params: Optional[dict] = None):
         try:
-            resp = self.http.get(f"{API}{path}", headers=self._headers(), timeout=15)
+            resp = self.http.get(f"{API}{path}", headers=self._headers(), params=params, timeout=15)
         except requests.RequestException as exc:
             raise ArduinoError("Can't reach Arduino Cloud. Check the Pi's internet.") from exc
         if resp.status_code == 401:
@@ -141,9 +169,74 @@ class ArduinoCloud:
             raise ArduinoError(f"Arduino Cloud error ({resp.status_code}).")
         return resp.json()
 
+    @staticmethod
+    def _value(p: dict, thing: dict) -> dict:
+        name = p.get("variable_name") or p.get("name") or ""
+        return {
+            "id": p.get("id"), "thingId": thing.get("id"), "thing": thing.get("name") or "",
+            "name": name, "label": nice_name(name), "type": p.get("type") or "",
+            "value": p.get("last_value"),
+            "unit": UNITS.get((p.get("type") or "").upper(), ""),
+            "updatedAt": p.get("value_updated_at") or p.get("last_value_updated_at") or p.get("updated_at"),
+            "writable": (p.get("permission") or "").upper() == "READ_WRITE",
+        }
+
+    def _dashboards(self) -> list:
+        """Arduino dashboards with their widgets (kept for a minute)."""
+        if self._layout and time.monotonic() - self._layout[0] < LAYOUT_SECONDS:
+            return self._layout[1]
+        try:
+            boards = self._get("/iot/v2/dashboards") or []
+        except ArduinoError as exc:
+            if "isn't allowed" in str(exc):
+                boards = []      # key can read things but not dashboards: show one page per thing
+            else:
+                raise
+        full = []
+        for b in boards:
+            if not isinstance(b, dict):
+                continue
+            if "widgets" not in b and b.get("id"):
+                b = self._get(f"/iot/v2/dashboards/{b['id']}") or b
+            full.append(b)
+        self._layout = (time.monotonic(), full)
+        return full
+
+    @staticmethod
+    def _pages(boards: list, things: list) -> list:
+        by_id = {v["id"]: v for t in things for v in t["properties"]}
+        by_name = {(v["thingId"], v["name"]): v for t in things for v in t["properties"]}
+        pages = []
+        for b in boards:   # same order as Arduino Cloud lists them
+            widgets = []
+            for w in sorted(b.get("widgets") or [], key=lambda w: (w.get("y", 0), w.get("x", 0))):
+                values = []
+                for lv in w.get("variables") or []:
+                    if not isinstance(lv, dict):
+                        continue
+                    live = by_id.get(lv.get("id")) or by_name.get((lv.get("thing_id"), lv.get("variable_name")))
+                    if live is None:   # not in the things list (e.g. shared from another account)
+                        live = ArduinoCloud._value({**lv, "last_value": lv.get("last_value")},
+                                                   {"id": lv.get("thing_id"), "name": lv.get("thing_name")})
+                    values.append(live)
+                name = (w.get("name") or "").strip()
+                if not name or any(name == v["name"] for v in values):   # Arduino names widgets after the variable
+                    name = values[0]["label"] if values else nice_name(w.get("type") or "")
+                widgets.append({
+                    "id": w.get("id"), "type": re.sub(r"[^a-z]", "", (w.get("type") or "").lower()),  # "Push Button" → pushbutton
+                    "name": name,
+                    "x": w.get("x", 0), "y": w.get("y", 0), "w": w.get("width", 1), "h": w.get("height", 1),
+                    "options": _simple_options(w.get("options")), "values": values,
+                })
+            pages.append({"id": b.get("id"), "name": b.get("name") or "Dashboard", "widgets": widgets})
+        return pages
+
     def readings(self) -> dict:
-        """{"things": [{"id", "name", "device", "properties": [{"name", "label", "type", "value", "unit",
-        "updatedAt", "writable"}]}], "fetchedAt"} — shared for a few seconds between screens."""
+        """{"things": [{"id", "name", "device", "properties": [...]}],
+            "pages": [{"id", "name", "widgets": [{"id", "type", "name", "options", "values": [...]}]}],
+            "fetchedAt"} — shared for a few seconds between screens.
+
+        "pages" are the Arduino dashboards, by name. Without any dashboard, there is one page per thing."""
         with self._lock:
             if self._cache and time.monotonic() - self._cache[0] < CACHE_SECONDS:
                 return self._cache[1]
@@ -153,16 +246,54 @@ class ArduinoCloud:
                 things.append({
                     "id": t.get("id"), "name": t.get("name") or "Thing",
                     "device": (t.get("device_name") or (t.get("device") or {}).get("name")) if isinstance(t, dict) else None,
-                    "properties": sorted(({
-                        "name": p.get("variable_name") or p.get("name") or "",
-                        "label": nice_name(p.get("variable_name") or p.get("name") or ""),
-                        "type": p.get("type") or "",
-                        "value": p.get("last_value"),
-                        "unit": UNITS.get((p.get("type") or "").upper(), ""),
-                        "updatedAt": p.get("value_updated_at") or p.get("updated_at"),
-                        "writable": (p.get("permission") or "").upper() == "READ_WRITE",
-                    } for p in props), key=lambda x: x["label"].lower()),
+                    "properties": sorted((self._value(p, t) for p in props), key=lambda x: x["label"].lower()),
                 })
-            result = {"things": things, "fetchedAt": time.time()}
+            pages = self._pages(self._dashboards(), things)
+            if not pages:
+                pages = [{"id": f"thing-{t['id']}", "name": t["name"], "fromThing": True,
+                          "widgets": [{"id": v["id"], "type": "", "name": v["label"], "x": i % 4, "y": i // 4, "w": 1, "h": 1,
+                                       "options": {}, "values": [v]} for i, v in enumerate(t["properties"])]}
+                         for t in things if t["properties"]]
+            result = {"things": things, "pages": pages, "fetchedAt": time.time()}
             self._cache = (time.monotonic(), result)
+            return result
+
+    def history(self) -> dict:
+        """Recent values of the number variables shown on the pages, for the small charts:
+        {"series": {property id: [[unix time, value], …]}, "hours": 6}."""
+        with self._history_lock:
+            if self._history and time.monotonic() - self._history[0] < HISTORY_SECONDS:
+                return self._history[1]
+            data = self.readings()
+            wanted, seen = [], set()
+            charts_first = sorted((w for p in data["pages"] for w in p["widgets"]), key=lambda w: "chart" not in w["type"])
+            for w in charts_first:
+                for v in w["values"]:
+                    if v["id"] and v["thingId"] and _is_number(v["value"]) and v["id"] not in seen:
+                        seen.add(v["id"])
+                        wanted.append(v)
+            wanted = wanted[:HISTORY_MAX_SERIES]
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            params = {"from": (now - timedelta(hours=HISTORY_HOURS)).isoformat().replace("+00:00", "Z"),
+                      "to": now.isoformat().replace("+00:00", "Z"),
+                      "interval": int(HISTORY_HOURS * 3600 / HISTORY_POINTS)}
+
+            def one(v):
+                try:
+                    raw = self._get(f"/iot/v2/things/{v['thingId']}/properties/{v['id']}/timeseries", params) or {}
+                except ArduinoError:
+                    return v["id"], []
+                points = []
+                for d in raw.get("data") or []:
+                    try:
+                        t = datetime.fromisoformat(str(d["time"]).replace("Z", "+00:00")).timestamp()
+                        points.append([round(t), float(d["value"])])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                return v["id"], sorted(points)[-HISTORY_POINTS:]
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                series = {pid: pts for pid, pts in pool.map(one, wanted) if pts}
+            result = {"series": series, "hours": HISTORY_HOURS}
+            self._history = (time.monotonic(), result)
             return result

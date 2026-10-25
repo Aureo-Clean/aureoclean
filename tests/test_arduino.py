@@ -29,17 +29,26 @@ class FakeArduino:
             return Resp(401, {"error": "invalid_client"})
         return Resp(200, {"access_token": "tok", "expires_in": 300})
 
-    def get(self, url, headers=None, timeout=None):
+    dashboards = None   # None = the key may not read dashboards (403)
+
+    def get(self, url, headers=None, params=None, timeout=None):
         self.calls.append(("get", url))
         assert headers["Authorization"] == "Bearer tok"
+        if url.endswith("/iot/v2/dashboards"):
+            return Resp(403, {}) if self.dashboards is None else Resp(200, self.dashboards)
+        if url.endswith("/timeseries"):
+            self.calls.append(("params", params))
+            if "/properties/p1/" in url:
+                return Resp(200, {"data": [{"time": "2026-10-25T04:00:00Z", "value": 70}, {"time": "2026-10-25T04:06:00Z", "value": 71.5}]})
+            return Resp(500, {})
         if url.endswith("/iot/v2/things"):
             return Resp(200, [{"id": "t1", "name": "Restroom 2F Male", "device_name": "ESP32-2FM"}])
         if url.endswith("/iot/v2/things/t1/properties"):
             return Resp(200, [
-                {"variable_name": "waterLevel", "type": "PERCENTAGE", "last_value": 72.5, "value_updated_at": "2026-10-25T05:00:00Z",
+                {"id": "p1", "variable_name": "waterLevel", "type": "PERCENTAGE", "last_value": 72.5, "value_updated_at": "2026-10-25T05:00:00Z",
                  "permission": "READ_ONLY"},
-                {"variable_name": "smoke_detected", "type": "BOOL", "last_value": False, "value_updated_at": "2026-10-25T05:00:00Z"},
-                {"variable_name": "temperature", "type": "TEMPERATURE_C", "last_value": 29.4, "value_updated_at": "2026-10-25T05:00:00Z"},
+                {"id": "p2", "variable_name": "smoke_detected", "type": "BOOL", "last_value": False, "value_updated_at": "2026-10-25T05:00:00Z"},
+                {"id": "p3", "variable_name": "temperature", "type": "TEMPERATURE_C", "last_value": 29.4, "value_updated_at": "2026-10-25T05:00:00Z"},
             ])
         return Resp(404, {})
 
@@ -55,7 +64,7 @@ class LiveSensors(Base):
 
     def test_connect_and_read(self):
         r = self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")
-        self.assertIn("1 thing(s), 3 sensor value(s)", r["message"])
+        self.assertIn("1 page (Restroom 2F Male), 3 sensor values", r["message"])
         data = self.svc.sensors()
         thing = data["things"][0]
         self.assertEqual((thing["name"], thing["device"]), ("Restroom 2F Male", "ESP32-2FM"))
@@ -78,6 +87,39 @@ class LiveSensors(Base):
         self.svc.arduino.save("client-id-123", "wrong-secret")
         with self.assertRaises(ServiceUnavailable):
             self.svc.sensors()
+
+    def test_pages_follow_arduino_dashboards(self):
+        self.fake.dashboards = [
+            {"id": "d2", "name": "Page 2", "widgets": []},
+            {"id": "d1", "name": "Urinal", "widgets": [
+                {"id": "w2", "type": "Chart", "name": "Water", "x": 0, "y": 2, "width": 4, "height": 2,
+                 "options": {"nested": {"a": 1}}, "variables": [{"id": "p1", "thing_id": "t1", "variable_name": "waterLevel"}]},
+                {"id": "w1", "type": "Push Button", "name": "Smoke", "x": 0, "y": 0, "width": 1, "height": 1,
+                 "options": {"min": 0, "max": 1}, "variables": [{"id": "p2", "thing_id": "t1", "variable_name": "smoke_detected"}]},
+            ]},
+        ]
+        r = self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")
+        self.assertIn("2 pages (Page 2, Urinal)", r["message"])
+        pages = self.svc.sensors()["pages"]
+        self.assertEqual([p["name"] for p in pages], ["Page 2", "Urinal"])     # same names as in Arduino
+        self.assertEqual(pages[0]["widgets"], [])
+        urinal = pages[1]["widgets"]
+        self.assertEqual([w["id"] for w in urinal], ["w1", "w2"])               # top to bottom like Arduino
+        self.assertEqual(urinal[0]["type"], "pushbutton")
+        self.assertEqual(urinal[0]["options"], {"min": 0, "max": 1})
+        self.assertEqual(urinal[1]["values"][0]["value"], 72.5)                 # live value of the linked variable
+        self.assertEqual(urinal[1]["values"][0]["unit"], "%")
+        # Small charts: the history of number variables; a failing series is just left out.
+        hist = self.svc.sensor_history()
+        self.assertEqual(hist["series"], {"p1": [[1792900800, 70.0], [1792901160, 71.5]]})
+        params = [c[1] for c in self.fake.calls if c[0] == "params"][0]
+        self.assertEqual(params["interval"], 360)
+
+    def test_without_dashboards_one_page_per_thing(self):
+        self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")
+        page = self.svc.sensors()["pages"][0]
+        self.assertEqual(page["name"], "Restroom 2F Male")
+        self.assertEqual(len(page["widgets"]), 3)
 
     def test_janitors_can_see_sensors(self):
         self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")

@@ -503,6 +503,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def sensors(_: Session = Depends(any_user)):
         return svc().sensors()
 
+    @app.get("/sensors/history")
+    def sensor_history(_: Session = Depends(any_user)):
+        return svc().sensor_history()
+
     @app.post("/admin/arduino")
     def arduino_connect(body: ArduinoBody, session: Session = Depends(admin)):
         return svc().set_arduino(session, body.clientId, body.clientSecret, body.org)

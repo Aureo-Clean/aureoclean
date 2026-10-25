@@ -64,6 +64,12 @@ const ICONS = {
   search: [['circle', { cx: 11, cy: 11, r: 7 }], ['path', { d: 'm20 20-3.5-3.5' }]],
   more: ['path', { d: 'M5 12h.01M12 12h.01M19 12h.01' }],
   x: ['path', { d: 'M6 6l12 12M18 6 6 18' }],
+  expand: ['path', { d: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' }],
+  back: ['path', { d: 'm15 6-6 6 6 6' }],
+  keyboard: [['rect', { x: 2.5, y: 6, width: 19, height: 12, rx: 2 }], ['path', { d: 'M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10' }]],
+  shift: ['path', { d: 'M12 4 4 12h4.5v7h7v-7H20z' }],
+  bksp: [['path', { d: 'M9 5h11a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-6-7z' }], ['path', { d: 'm12 9 6 6M18 9l-6 6' }]],
+  kbdown: [['rect', { x: 3, y: 3, width: 18, height: 11, rx: 2 }], ['path', { d: 'M7 7h.01M11 7h.01M15 7h.01M8 10.5h8M9 18l3 3 3-3' }]],
   shield: ['path', { d: 'M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z' }],
 };
 

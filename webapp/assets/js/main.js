@@ -9,6 +9,8 @@ import {
 } from './core.js';
 import { jobsView, reportProblemView, sensorsView } from './janitor.js';
 import { initLock, isLocked, lockNow } from './lock.js';
+import { initKeyboard } from './keyboard.js';
+import { liveView } from './sensors.js';
 
 const PUBLIC = new Set(['/login', '/join', '/activate', '/admin-invite', '/status']);
 
@@ -27,9 +29,10 @@ route('/account', accountView);
 route('/jobs', jobsView);
 route('/report', reportProblemView);
 route('/sensors', sensorsView);
+route('/live', liveView);
 
 const ADMIN_NAV = [
-  { path: '/home', label: 'Home', icon: 'home', tab: 'Home' },
+  { path: '/home', label: 'Home', icon: 'home', tab: 'Home', also: ['/live'] },
   { group: 'Operations' },
   { path: '/reports', label: 'Reports', icon: 'reports', badge: 'reports', also: ['/charts'], tab: 'Reports' },
   { group: 'People' },
@@ -38,7 +41,7 @@ const ADMIN_NAV = [
   { path: '/system', label: 'System', icon: 'pulse', badge: 'system', tab: 'System' },
 ];
 const JANITOR_NAV = [
-  { path: '/sensors', label: 'Home', icon: 'home', tab: 'Home' },
+  { path: '/sensors', label: 'Home', icon: 'home', tab: 'Home', also: ['/live'] },
   { path: '/jobs', label: 'My jobs', icon: 'reports', badge: 'jobs', tab: 'Jobs' },
   { path: '/report', label: 'Report a problem', icon: 'plus', tab: 'Report' },
 ];
@@ -196,6 +199,7 @@ window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && session.user) poll(); });
 shell.listeners.add((m) => { if (m.event === 'kiosk' && current && current.refresh) current.refresh(); });
 initLock((note) => signOut(note));
+initKeyboard();
 if (shell.isPi) {
   document.documentElement.classList.add('on-pi');
   shell.send('ready');

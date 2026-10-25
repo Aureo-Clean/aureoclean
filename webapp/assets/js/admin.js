@@ -7,7 +7,7 @@ import {
   CATEGORY, empty, enterSubmits, errorBox, field, message, pageHead, priorityChip, refBox, say, segmented,
   select, skeletonList, statusChip, switchEl,
 } from './ui.js';
-import { sensorsPanel } from './sensors.js';
+import { sensorsCard } from './sensors.js';
 
 const PUBLIC_SITE = 'https://aureo-clean.github.io/aureoclean/';
 
@@ -70,15 +70,6 @@ export function homeView() {
   };
   view.refresh();
   return view;
-}
-
-/** Live sensors card (Home, both roles): the latest Arduino Cloud values as tiles,
- *  read by the Pi with an API key, so nobody signs in to Arduino. */
-export function sensorsCard() {
-  return h('section', { class: 'card sensors', 'aria-label': 'Live sensors' },
-    h('div', { class: 'head' }, h('span', { class: 'dot ok live' }), h('b', { class: 'small' }, 'Live sensors'),
-      h('span', { class: 'small muted' }, 'Arduino IoT Cloud · updates every 10 s')),
-    sensorsPanel({ compact: true }));
 }
 
 export async function healthPill(pill) {

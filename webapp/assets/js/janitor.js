@@ -1,6 +1,6 @@
 // Janitor screens: My jobs (the simple report view), Report a problem, Live sensors.
 import { ago, busy, cached, firstName, get, h, icon, peek, post, session, toast, invalidate } from './core.js';
-import { sensorsCard } from './admin.js';
+import { sensorsCard } from './sensors.js';
 import { empty, errorBox, message, pageHead, priorityChip, say, segmented } from './ui.js';
 
 export function jobsView(_p, query) {

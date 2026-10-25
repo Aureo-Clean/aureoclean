@@ -4,8 +4,8 @@ The screens themselves are the web app in ``webapp/`` (the same pages the Wi-Fi
 website serves), so the Pi and phones always look and work the same. This
 window adds what only the Pi can do:
 
-* the live Arduino dashboard, as its own full-screen page (native viewer, stays
-  signed in to Arduino);
+* Arduino's own dashboard, as its own full-screen page (native viewer, stays
+  signed in to Arduino) — the app's Live sensors view shows the same pages without it;
 * kiosk mode (full screen, can't be closed by accident; the idle lock is in the
   web app);
 * saving Excel downloads and PDFs to ~/Documents;
@@ -55,7 +55,7 @@ def main() -> int:
     from PySide6.QtGui import QIcon, QPageLayout, QPageSize
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
     from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget
+    from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget
 
     from .pages.common import open_in_browser
     from .pages.dashboard import DashboardPanel
@@ -123,17 +123,30 @@ def main() -> int:
             self.page_.pdfPrintingFinished.connect(self.on_pdf)
             self.stack.addWidget(self.view)
 
-            # Page 1: live Arduino dashboard, with a way back.
+            # Page 1: Arduino's own dashboard (the app's Live sensors view is the main one), with a way back.
             sensors = QWidget()
             col = QVBoxLayout(sensors)
             col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(0)
-            bar = QWidget()
+            # A QFrame (not a plain QWidget) so the navy "TopBar" style paints its background;
+            # otherwise the white back button and title disappear on a white page.
+            bar = QFrame()
             bar.setObjectName("TopBar")
+            bar.setAttribute(Qt.WA_StyledBackground, True)
+            bar.setFixedHeight(46)
+            bar.setStyleSheet(
+                "QFrame#TopBar { background: #14336E; border: none; }"
+                "QFrame#TopBar QLabel { color: white; font-size: 15px; font-weight: 700; background: transparent; }"
+                "QFrame#TopBar QPushButton { color: white; background: rgba(255,255,255,0.14); font-weight: 600;"
+                " border: 1px solid rgba(255,255,255,0.6); border-radius: 8px; padding: 4px 14px; }"
+                "QFrame#TopBar QPushButton:pressed { background: rgba(255,255,255,0.28); }")
             row = QHBoxLayout(bar)
-            row.setContentsMargins(10, 5, 10, 5)
-            row.addWidget(button("‹  Back to AureoClean", "TopButton", self.show_ui))
-            title = QLabel("Live sensors")
+            row.setContentsMargins(10, 6, 12, 6)
+            row.setSpacing(12)
+            back = button("‹  Back to AureoClean", "TopButton", self.show_ui)
+            back.setMinimumHeight(34)
+            row.addWidget(back)
+            title = QLabel("Arduino Cloud dashboard")
             title.setObjectName("TopTitle")
             row.addWidget(title)
             row.addStretch(1)

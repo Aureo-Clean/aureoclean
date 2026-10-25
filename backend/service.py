@@ -875,6 +875,14 @@ class AureoService:
         except ArduinoError as exc:
             raise ServiceUnavailable(str(exc))
 
+    def sensor_history(self) -> dict:
+        if not self.arduino.configured:
+            return {"series": {}, "hours": 0}
+        try:
+            return self.arduino.history()
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+
     def set_arduino(self, admin: Session, client_id: str, client_secret: str, org: str = "") -> dict:
         try:
             self.arduino.save(client_id, client_secret, org)
@@ -883,7 +891,10 @@ class AureoService:
             raise BadRequest(str(exc))
         self.audit("arduino_connected", admin.actor, None)
         count = sum(len(t["properties"]) for t in data["things"])
-        return {"configured": True, "message": f"Connected: {len(data['things'])} thing(s), {count} sensor value(s)."}
+        names = [p["name"] for p in data.get("pages", [])]
+        shown = ", ".join(names[:4]) + ("…" if len(names) > 4 else "")
+        pages = f"{len(names)} page{'s' if len(names) != 1 else ''} ({shown})" if names else "no dashboards yet"
+        return {"configured": True, "message": f"Connected: {pages}, {count} sensor value{'s' if count != 1 else ''}."}
 
     def clear_arduino(self, admin: Session) -> dict:
         self.arduino.clear()

@@ -112,9 +112,18 @@ shows the error (full details in `logs/backend.log`).
 
 ## Live sensors (Arduino IoT Cloud, no Arduino sign-in)
 
-The latest value of every Arduino Cloud variable is shown as simple tiles on **Home**: for admins
-and janitors, on the Pi and on phones over the Wi-Fi website. It updates every 10 s. Nobody signs
-in to Arduino: the Pi reads the values itself with an **API key**.
+Your Arduino Cloud dashboards are shown inside the app, in AureoClean's style: on **Home** (admins and
+janitors, on the Pi and on phones over the Wi-Fi website) and full screen with **Full view**. Nobody
+signs in to Arduino: the Pi reads everything itself with an **API key**.
+
+- **Pages = your Arduino dashboards**, with the same names and in the same order (e.g. "Urinal",
+  "Page 2"). Add a dashboard or widgets in Arduino Cloud and they appear here within a minute.
+  With no dashboards yet, there's one page per thing.
+- **Widgets** follow Arduino's: gauges, percentage rings, LED/status lights, on/off, sliders as level
+  bars, values with a small 6-hour trend line, charts (last 6 hours), messages and sticky notes.
+  Controls are shown read-only — change values in Arduino Cloud.
+- Values update in place every 5 s with gentle animations (the ring next to "Updated" counts down to
+  the next refresh). If Arduino can't be reached, the last values stay on screen with a note.
 
 Set up once (admin):
 1. Open <https://app.arduino.cc/api-keys>, sign in, press **Create API key** and name it "AureoClean".
@@ -125,12 +134,12 @@ Set up once (admin):
 
 The key is stored only on the Pi in `~/.config/aureoclean/arduino.json` (readable by this user only), or
 put it in the config file instead: `AUREOCLEAN_ARDUINO_CLIENT_ID=…`, `AUREOCLEAN_ARDUINO_CLIENT_SECRET=…`,
-optional `AUREOCLEAN_ARDUINO_ORG=…`. Never commit it. **Arduino settings** (under the tiles) changes or
-disconnects it. Values not updated for 15 minutes are greyed out ("last seen …"); yes/no values named
-like smoke, leak, flood or alarm show **Yes** in red.
+optional `AUREOCLEAN_ARDUINO_ORG=…`. Never commit it. **Full view → Arduino settings** changes or
+disconnects it. Values not updated for 15 minutes are greyed out ("last seen …"); yes/no
+values named like smoke, leak, flood or alarm show **Yes** in red (and **No** in green).
 
-The full Arduino dashboard (with its own Arduino sign-in) is still one tap away on the Pi:
-**Full Arduino dashboard** under the tiles. Put its link in the config file as
+Arduino's own dashboard (with its own Arduino sign-in) is still there on the Pi: **Full view →
+Arduino's own dashboard**. Put its link in the config file as
 `AUREOCLEAN_DASHBOARD_URL=https://app.arduino.cc/dashboards/…`.
 
 Admins open Arduino Cloud and the Firebase Console from **System → Kiosk & web → Websites**; those open in
@@ -282,7 +291,12 @@ Kiosk mode is a switch: **System → Kiosk & web**. While it's on, the app is fu
 be closed by accident, and locks after 5 minutes without a touch (unlock with a 4–6 digit PIN
 from My account → **Screen-lock PIN**, or the password; five wrong tries sign out; **Lock** in
 the sidebar locks right away). Keypad keys react on touch-down and the PIN is checked on the Pi without
-waiting for Firebase, so unlocking is instant. To leave it: turn the switch off, or press **Exit kiosk mode…**
+waiting for Firebase, so unlocking is instant.
+
+In kiosk mode the window covers the Pi's own on-screen keyboard, so AureoClean shows its **own
+keyboard** whenever a text box is tapped (letters, ?123 symbols, a number pad for PINs and phone
+numbers, hold ⌫ to keep deleting, ⌄ to hide it; tap the box again to bring it back). Outside kiosk mode
+the Pi's normal keyboard is used. Typing on a real keyboard hides it. To leave it: turn the switch off, or press **Exit kiosk mode…**
 on the sign-in screen (an admin's username and password are needed). The app always starts in a
 normal window. Change the lock time with `AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never).
 
@@ -347,11 +361,11 @@ backend/
   web.py           Wi-Fi website listener, security headers, rate limits
   two_way.py       SMS replies (OK/DONE) and escalation
   health.py        System health checks
-  arduino.py       live sensor values from Arduino Cloud (API key)
+  arduino.py       Arduino Cloud dashboards, values and history (API key)
   analysis.py      report statistics (charts, Excel, LLM-ready data)
   sms.py           SMS senders: test mode (log) and GSM modem (AT commands)
   providers/       firebase.py (Auth + Firestore), local.py (SQLite)
-webapp/            the screens (HTML/CSS/JS, no build step): js/main.js, admin.js, janitor.js, …
+webapp/            the screens (HTML/CSS/JS, no build step): js/main.js, admin.js, janitor.js, sensors.js, keyboard.js, …
 desktop/
   shell.py         the Pi window: shows webapp/, Arduino dashboard, kiosk, downloads/PDF
   app.py, pages/   the classic Qt screens (./run_local.sh --classic)
