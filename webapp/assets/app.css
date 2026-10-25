@@ -272,8 +272,32 @@ button.list-row:hover, a.list-row:hover { background: #F8FAFD; color: inherit; }
                  text-align: center; background: linear-gradient(180deg, #FAFBFD, #F4F7FB); }
 .sensors .body svg { width: 46px; height: 46px; color: var(--blue); }
 .side-stats { display: flex; flex-direction: column; gap: var(--gap); }
+/* live sensor tiles */
+.sensors-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.sensors-body { flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.sensors-body .empty { padding: 18px 10px; }
+.sensors-foot { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px 12px; position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--row); border-radius: 0 0 var(--radius) var(--radius); }
+.sensors-foot:empty { display: none; }
+.thing { display: flex; flex-direction: column; gap: 8px; }
+.thing-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.sensor { background: #FAFBFD; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column;
+          gap: 2px; min-width: 0; animation: rise .25s var(--ease) both; transition: border-color .2s, background .2s; }
+.sensor .sname { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sensor .sval { font-size: 24px; font-weight: 700; color: var(--navy); line-height: 1.2; }
+.sensor .sunit { font-size: 13px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+.sensor .sbool { align-self: flex-start; margin: 3px 0; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 700;
+                 background: var(--sunken); color: var(--muted); }
+.sensor .sbool.on { background: var(--blue-soft); color: var(--blue-dark); }
+.sensor .sbool.alert { background: var(--red); color: #fff; }
+.sensor .swhen { font-size: 11px; color: var(--muted); }
+.sensor.alert { border-color: #F1C9C5; background: #FFF6F5; }
+.sensor.stale { opacity: .6; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(46,158,72,.5); } 50% { box-shadow: 0 0 0 5px rgba(46,158,72,0); } }
+.dot.live { animation: pulse 2s infinite; }
 .today-line { display: flex; justify-content: space-between; font-size: 13px; }
-@media (max-width: 759px) { .home-grid { grid-template-columns: minmax(0, 1fr); } .sensors { min-height: 0; } }
+@media (max-width: 759px) { .home-grid { grid-template-columns: minmax(0, 1fr); flex: none; } .sensors { min-height: 0; flex-shrink: 0; overflow: visible; }
+  .sensors-panel { flex: none; overflow: visible; } .sensors-foot { position: static; } .page-head { flex-shrink: 0; } }
 
 /* ---------- reports ---------- */
 .report-head h1 { font-size: 22px; }
@@ -427,7 +451,7 @@ button.list-row:hover, a.list-row:hover { background: #F8FAFD; color: inherit; }
 @media (max-width: 759px) { #toasts { bottom: calc(76px + env(safe-area-inset-bottom)); } }
 
 /* ---------- lock screen ---------- */
-.lock { position: fixed; inset: 0; z-index: 50; background: var(--navy); color: #fff; display: flex; align-items: center; gap: 40px;
+.lock { position: fixed; inset: 0; z-index: 80; background: var(--navy); color: #fff; display: flex; align-items: center; gap: 40px;
         padding: 32px 56px; animation: fade .3s ease both; }
 .lock .left { flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .lock .logo { width: 44px; height: 44px; background: #fff; border-radius: 12px; padding: 6px; }
@@ -453,6 +477,8 @@ button.list-row:hover, a.list-row:hover { background: #F8FAFD; color: inherit; }
 .lock .err { min-height: 18px; text-align: center; font-size: 12px; color: #FFD3CF; }
 .lock .out { text-align: center; font-size: 12px; color: var(--nav-text); background: none; border: none; cursor: pointer; text-decoration: underline; }
 .lock.shake .pad { animation: shake .35s; }
+.lock.checking .keys { opacity: .55; pointer-events: none; }
+.key { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
 @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
 @media (max-width: 759px) { .lock { flex-direction: column; justify-content: center; padding: 24px; gap: 20px; } .lock .left { flex: none; align-items: center; text-align: center; } }
 

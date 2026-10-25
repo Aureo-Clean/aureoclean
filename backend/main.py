@@ -102,6 +102,12 @@ class InviteBody(BaseModel):
     hours: Optional[int] = Field(default=None, ge=1, le=168)
 
 
+class ArduinoBody(BaseModel):
+    clientId: str = Field(max_length=200)
+    clientSecret: str = Field(max_length=300)
+    org: str = Field(default="", max_length=100)
+
+
 class MailBody(BaseModel):
     user: str = Field(max_length=254)
     password: str = Field(max_length=64)
@@ -491,6 +497,19 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
         if svg is None:
             return JSONResponse({"detail": "QR codes need the segno package (run Update AureoClean)."}, status_code=404)
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+    # ------------------------------------------------ live sensors (any role)
+    @app.get("/sensors")
+    def sensors(_: Session = Depends(any_user)):
+        return svc().sensors()
+
+    @app.post("/admin/arduino")
+    def arduino_connect(body: ArduinoBody, session: Session = Depends(admin)):
+        return svc().set_arduino(session, body.clientId, body.clientSecret, body.org)
+
+    @app.post("/admin/arduino/clear")
+    def arduino_clear(session: Session = Depends(admin)):
+        return svc().clear_arduino(session)
 
     # ------------------------------------------------ reporting a problem (any role)
     @app.get("/report-options")

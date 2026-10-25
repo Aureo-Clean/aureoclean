@@ -44,17 +44,24 @@ export function lockNow(minutes = 0) {
   const drawPins = () => pins.replaceChildren(...Array.from({ length: Math.max(4, entry.length) }, (_, i) => h('span', { class: i < entry.length ? 'on' : '' })));
   const pw = h('input', { class: 'pw', type: 'password', placeholder: 'Password', 'aria-label': 'Password', autocomplete: 'current-password' });
 
+  let checking = false;
   async function unlock() {
     const secret = usePin ? entry : pw.value;
-    if (!secret) return;
-    entry = ''; pw.value = ''; if (usePin) drawPins();
+    if (!secret || checking) return;
+    checking = true;
+    lockEl.classList.add('checking');
+    err.textContent = 'Checking…';
     try {
-      await post('/auth/unlock', { secret }, { timeout: 60000 });
+      await post('/auth/unlock', { secret }, { timeout: 20000 });
       close();
     } catch (e) {
-      err.textContent = e.message;
+      entry = ''; pw.value = ''; if (usePin) drawPins();
+      err.textContent = e.status ? e.message : 'Couldn\'t check just now (the Pi is busy or offline). Try again.';
       lockEl.classList.remove('shake'); void lockEl.offsetWidth; lockEl.classList.add('shake');
       if (e.status === 401) { close(); signOut(e.message); }
+    } finally {
+      checking = false;
+      if (lockEl) lockEl.classList.remove('checking');
     }
   }
   function close() {
@@ -64,22 +71,29 @@ export function lockNow(minutes = 0) {
     lockEl = null;
     lastActivity = Date.now();
   }
-  function press(d) { if (entry.length < 6) { entry += d; drawPins(); err.textContent = ''; } }
+  function press(d) { if (!checking && entry.length < 6) { entry += d; drawPins(); err.textContent = ''; } }
   const onKey = (e) => {
     if (!usePin) return;
     if (/^[0-9]$/.test(e.key)) { press(e.key); e.preventDefault(); }
-    else if (e.key === 'Backspace') { entry = entry.slice(0, -1); drawPins(); e.preventDefault(); }
+    else if (e.key === 'Backspace') { if (!checking) { entry = entry.slice(0, -1); drawPins(); } e.preventDefault(); }
     else if (e.key === 'Enter') { unlock(); e.preventDefault(); }
   };
   document.addEventListener('keydown', onKey, true);
 
-  const key = (label, fn, cls = '') => h('button', { class: `key ${cls}`, type: 'button', 'aria-label': label, onclick: fn }, label);
+  // Keys react the moment a finger touches them (touchscreens can drop or delay "click").
+  const key = (label, fn, cls = '') => {
+    const b = h('button', { class: `key ${cls}`, type: 'button', 'aria-label': label }, label);
+    let viaPointer = false;
+    b.addEventListener('pointerdown', (e) => { viaPointer = true; e.preventDefault(); fn(); });
+    b.addEventListener('click', () => { if (!viaPointer) fn(); viaPointer = false; }); // keyboard / screen reader
+    return b;
+  };
   const pad = usePin
     ? [h('div', { class: 't' }, 'Enter your PIN'), pins,
       h('div', { class: 'keys' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => key(d, () => press(d))),
-        h('button', { class: 'key ghost', type: 'button', 'aria-label': 'Delete', onclick: () => { entry = entry.slice(0, -1); drawPins(); } }, '⌫'),
-        key('0', () => press('0')), h('button', { class: 'key go', type: 'button', onclick: unlock }, 'Unlock'))]
-    : [h('div', { class: 't' }, 'Enter your password'), pw, h('button', { class: 'key go', type: 'button', onclick: unlock }, 'Unlock'),
+        (() => { const d = key('⌫', () => { if (!checking) { entry = entry.slice(0, -1); drawPins(); } }, 'ghost'); d.setAttribute('aria-label', 'Delete'); return d; })(),
+        key('0', () => press('0')), key('Unlock', unlock, 'go'))]
+    : [h('div', { class: 't' }, 'Enter your password'), pw, key('Unlock', unlock, 'go'),
       h('div', { class: 'small', style: { color: 'var(--nav-group)', textAlign: 'center' } }, 'Tip: set a PIN in My account for faster unlocking.')];
   pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') unlock(); });
   if (usePin) drawPins();

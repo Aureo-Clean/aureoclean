@@ -1,5 +1,6 @@
 // Janitor screens: My jobs (the simple report view), Report a problem, Live sensors.
-import { ago, busy, cached, firstName, get, h, icon, openExternal, peek, post, session, shell, toast, invalidate } from './core.js';
+import { ago, busy, cached, firstName, get, h, icon, peek, post, session, toast, invalidate } from './core.js';
+import { sensorsCard } from './admin.js';
 import { empty, errorBox, message, pageHead, priorityChip, say, segmented } from './ui.js';
 
 export function jobsView(_p, query) {
@@ -151,19 +152,24 @@ export function reportProblemView() {
   return view;
 }
 
-// ------------------------------------------------------------------ live sensors
+// ------------------------------------------------------------------ home: live dashboard + my jobs
 export function sensorsView() {
-  const body = h('div', { class: 'card sensors', style: { minHeight: '260px', flex: '1' } });
-  const inner = h('div', { class: 'body' }, icon('sensors'), h('b', null, 'Live sensor readings'), h('span', { class: 'small muted' }, 'Your Arduino IoT Cloud dashboard.'));
-  body.append(inner);
-  if (shell.isPi) {
-    inner.append(h('button', { class: 'btn primary lg', type: 'button', onclick: () => shell.send('dashboard') }, icon('sensors'), 'Open live sensors'));
-  } else {
-    cached('links', () => get('/links'), 60000).then((links) => {
-      const dash = links.find((l) => l.key === 'dashboard');
-      inner.append(dash ? h('button', { class: 'btn primary lg', type: 'button', onclick: () => openExternal(dash.url) }, icon('external'), 'Open the dashboard')
-        : h('span', { class: 'small muted' }, 'The dashboard isn\'t set up yet. Ask an administrator.'));
-    }).catch(() => {});
-  }
-  return h('div', { class: 'stack enter', style: { flex: '1' } }, pageHead('Live sensors'), body);
+  const openCard = h('a', { class: 'card stat', href: '#/jobs' }, h('div', { class: 'eyebrow' }, 'Open jobs'),
+    h('div', { class: 'value' }, '–'), h('div', { class: 'small muted' }, 'tap to see them'));
+  const mineCard = h('a', { class: 'card stat', href: '#/jobs?tab=mine' }, h('div', { class: 'eyebrow' }, 'With you'),
+    h('div', { class: 'value navy' }, '–'), h('div', { class: 'small muted' }, 'tap Done when finished'));
+  const report = h('a', { class: 'btn primary block', href: '#/report' }, icon('plus'), 'Report a problem');
+  const view = h('div', { class: 'stack enter', style: { flex: '1', minHeight: '0' } },
+    h('header', { class: 'page-head' }, h('div', null, h('h1', null, `Hi ${firstName(session.user)}`), h('div', { class: 'sub' }, new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })))),
+    h('div', { class: 'home-grid' }, sensorsCard(), h('aside', { class: 'side-stats' }, openCard, mineCard, report)));
+  view.refresh = async () => {
+    try {
+      invalidate('jobs');
+      const jobs = await cached('jobs', () => get('/janitor/jobs'), 0);
+      openCard.children[1].textContent = String(jobs.open.length);
+      mineCard.children[1].textContent = String(jobs.mine.length);
+    } catch { /* shown on My jobs */ }
+  };
+  view.refresh();
+  return view;
 }

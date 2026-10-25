@@ -7,6 +7,7 @@ import {
   CATEGORY, empty, enterSubmits, errorBox, field, message, pageHead, priorityChip, refBox, say, segmented,
   select, skeletonList, statusChip, switchEl,
 } from './ui.js';
+import { sensorsPanel } from './sensors.js';
 
 const PUBLIC_SITE = 'https://aureo-clean.github.io/aureoclean/';
 
@@ -33,11 +34,7 @@ export function homeView() {
     h('div', { class: 'small', style: { color: 'var(--blue)', marginTop: 'auto' } }, 'See charts ›'));
   todayCard.style.flex = '1';
 
-  const sensorsBody = h('div', { class: 'body' }, icon('sensors'), h('b', null, 'Live sensor readings'),
-    h('span', { class: 'small muted' }, 'Your Arduino IoT Cloud dashboard.'));
-  const sensors = h('section', { class: 'card sensors', 'aria-label': 'Live sensors' },
-    h('div', { class: 'head' }, h('span', { class: 'dot ok' }), h('b', { class: 'small' }, 'Live sensors'),
-      h('span', { class: 'small muted' }, 'Arduino IoT Cloud')), sensorsBody);
+  const sensors = sensorsCard();
 
   const view = h('div', { class: 'stack enter', style: { flex: '1', minHeight: '0' } },
     h('header', { class: 'page-head' },
@@ -45,7 +42,6 @@ export function homeView() {
       h('div', { class: 'grow' }), pill),
     h('div', { class: 'home-grid' }, sensors, h('aside', { class: 'side-stats' }, openCard, waitCard, todayCard)));
 
-  dashboardButton(sensorsBody);
 
   view.refresh = async () => {
     try {
@@ -76,19 +72,13 @@ export function homeView() {
   return view;
 }
 
-function dashboardButton(container) {
-  if (shell.isPi) {
-    container.append(h('button', { class: 'btn primary', type: 'button', onclick: () => shell.send('dashboard') }, icon('sensors'), 'Open live sensors'));
-    return;
-  }
-  const slot = h('div');
-  container.append(slot);
-  cached('links', () => get('/links'), 60000).then((links) => {
-    const dash = links.find((l) => l.key === 'dashboard');
-    slot.replaceChildren(dash
-      ? h('button', { class: 'btn primary', type: 'button', onclick: () => openExternal(dash.url) }, icon('external'), 'Open the dashboard')
-      : h('span', { class: 'small muted' }, 'Not set up yet: add AUREOCLEAN_DASHBOARD_URL to the Pi\'s config file.'));
-  }).catch(() => {});
+/** Live sensors card (Home, both roles): the latest Arduino Cloud values as tiles,
+ *  read by the Pi with an API key, so nobody signs in to Arduino. */
+export function sensorsCard() {
+  return h('section', { class: 'card sensors', 'aria-label': 'Live sensors' },
+    h('div', { class: 'head' }, h('span', { class: 'dot ok live' }), h('b', { class: 'small' }, 'Live sensors'),
+      h('span', { class: 'small muted' }, 'Arduino IoT Cloud · updates every 10 s')),
+    sensorsPanel({ compact: true }));
 }
 
 export async function healthPill(pill) {

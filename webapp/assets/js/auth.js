@@ -53,7 +53,7 @@ export function loginView(_params, query) {
         session.set(res.token);
         session.user = res.user;
         pass.input.value = '';
-        go(res.user.role === 'admin' ? '/home' : '/jobs', { replace: true });
+        go(res.user.role === 'admin' ? '/home' : '/sensors', { replace: true });
       } catch (err) {
         const verify = /verify your email/i.test(err.message);
         resend.classList.toggle('hidden', !verify);

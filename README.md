@@ -110,19 +110,28 @@ equivalent is a desktop launcher:
 If the service fails to start when opened from the icon, the sign-in screen
 shows the error (full details in `logs/backend.log`).
 
-## Arduino IoT Cloud dashboard
+## Live sensors (Arduino IoT Cloud, no Arduino sign-in)
 
-The dashboard is **built into the app**: it's the first tab for both admins and janitors.
-There is one shared dashboard view, so it stays loaded between sign-ins.
+The latest value of every Arduino Cloud variable is shown as simple tiles on **Home**: for admins
+and janitors, on the Pi and on phones over the Wi-Fi website. It updates every 10 s. Nobody signs
+in to Arduino: the Pi reads the values itself with an **API key**.
 
-1. In Arduino Cloud open your dashboard and copy the link from the address bar.
-2. Put it in `~/.config/aureoclean/aureoclean.env`: `AUREOCLEAN_DASHBOARD_URL=https://app.arduino.cc/dashboards/…`
-3. Restart the app. Sign in to Arduino **once** inside the Dashboard tab — the sign-in is saved
-   permanently (even Arduino's "session" cookie), so it survives sign-outs and restarts.
+Set up once (admin):
+1. Open <https://app.arduino.cc/api-keys>, sign in, press **Create API key** and name it "AureoClean".
+2. Copy the **Client ID** and **Client Secret** (the secret is shown only once; it's also in the PDF
+   Arduino lets you download).
+3. In AureoClean: **Home → Live sensors → Connect Arduino Cloud**, paste both, press **Connect**.
+   Things kept in an organization space also need its **Organization ID**.
 
-Use **A− / A+** to zoom the dashboard to fit the 7-inch screen (remembered), and **⟳ Reload** if it stalls.
-Whoever is signed in to Arduino there decides what can be changed — a view-only Arduino account
-shared with the dashboard is the safest choice.
+The key is stored only on the Pi in `~/.config/aureoclean/arduino.json` (readable by this user only), or
+put it in the config file instead: `AUREOCLEAN_ARDUINO_CLIENT_ID=…`, `AUREOCLEAN_ARDUINO_CLIENT_SECRET=…`,
+optional `AUREOCLEAN_ARDUINO_ORG=…`. Never commit it. **Arduino settings** (under the tiles) changes or
+disconnects it. Values not updated for 15 minutes are greyed out ("last seen …"); yes/no values named
+like smoke, leak, flood or alarm show **Yes** in red.
+
+The full Arduino dashboard (with its own Arduino sign-in) is still one tap away on the Pi:
+**Full Arduino dashboard** under the tiles. Put its link in the config file as
+`AUREOCLEAN_DASHBOARD_URL=https://app.arduino.cc/dashboards/…`.
 
 Admins open Arduino Cloud and the Firebase Console from **System → Kiosk & web → Websites**; those open in
 **Google Chrome** (install once with `./tools/install_chrome.sh`). In Chrome, turn on
@@ -272,7 +281,8 @@ a phone to `~/.config/aureoclean/aureoclean.env` as
 Kiosk mode is a switch: **System → Kiosk & web**. While it's on, the app is full screen, can't
 be closed by accident, and locks after 5 minutes without a touch (unlock with a 4–6 digit PIN
 from My account → **Screen-lock PIN**, or the password; five wrong tries sign out; **Lock** in
-the sidebar locks right away). To leave it: turn the switch off, or press **Exit kiosk mode…**
+the sidebar locks right away). Keypad keys react on touch-down and the PIN is checked on the Pi without
+waiting for Firebase, so unlocking is instant. To leave it: turn the switch off, or press **Exit kiosk mode…**
 on the sign-in screen (an admin's username and password are needed). The app always starts in a
 normal window. Change the lock time with `AUREOCLEAN_IDLE_LOCK_MINUTES` (0 = never).
 
@@ -337,6 +347,7 @@ backend/
   web.py           Wi-Fi website listener, security headers, rate limits
   two_way.py       SMS replies (OK/DONE) and escalation
   health.py        System health checks
+  arduino.py       live sensor values from Arduino Cloud (API key)
   analysis.py      report statistics (charts, Excel, LLM-ready data)
   sms.py           SMS senders: test mode (log) and GSM modem (AT commands)
   providers/       firebase.py (Auth + Firestore), local.py (SQLite)
@@ -357,6 +368,5 @@ tests/
 - Activation codes are handed over in person: a janitor has no verified number before activation.
   Could be added by asking for an optional mobile number at sign-up.
 - Restroom alerts are a placeholder until the Realtime Database sensor paths are wired in.
-- Google sign-in inside the dashboard relies on a browser-identity "quirk" (like the qutebrowser browser uses).
-  If Google ever blocks it again, sign in to Arduino with email + password, or use a separate
-  Arduino account (email + password) that the dashboard is shared with.
+- Live sensors only show values; alerts from sensor values (fixed rules) come in the next module.
+- The Full Arduino dashboard still needs an Arduino sign-in on the Pi (the tiles on Home don't).

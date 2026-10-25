@@ -11,3 +11,5 @@ service-account*.json
 logs/
 exports/
 .updating
+arduino.json
+mail.json

@@ -197,7 +197,8 @@ export function modal(build, { wide = false, onClose } = {}) {
   append(box, [build(close)]);
   document.body.append(overlay);
   const first = box.querySelector('input, select, textarea, button.primary, button');
-  if (first) setTimeout(() => first.focus(), 30);
+  // Focus the first field — unless the user already tapped into the dialog.
+  if (first) setTimeout(() => { if (!box.contains(document.activeElement)) first.focus(); }, 30);
   return close;
 }
 export function closeAllModals() { document.querySelectorAll('.overlay').forEach((o) => o.remove()); }

@@ -38,9 +38,9 @@ const ADMIN_NAV = [
   { path: '/system', label: 'System', icon: 'pulse', badge: 'system', tab: 'System' },
 ];
 const JANITOR_NAV = [
+  { path: '/sensors', label: 'Home', icon: 'home', tab: 'Home' },
   { path: '/jobs', label: 'My jobs', icon: 'reports', badge: 'jobs', tab: 'Jobs' },
   { path: '/report', label: 'Report a problem', icon: 'plus', tab: 'Report' },
-  { path: '/sensors', label: 'Live sensors', icon: 'sensors', tab: 'Sensors' },
 ];
 
 const app = document.getElementById('app');
@@ -123,12 +123,12 @@ async function render() {
   }
   const signedIn = !!session.user;
   if (!signedIn && !PUBLIC.has(pathname)) { go('/login', { replace: true }); return; }
-  const home = signedIn ? (session.user.role === 'admin' ? '/home' : '/jobs') : '/login';
+  const home = signedIn ? (session.user.role === 'admin' ? '/home' : '/sensors') : '/login';
   if (signedIn && (PUBLIC.has(pathname) || pathname === '/')) { go(home, { replace: true }); return; }
   const match = matchRoute(path);
   if (!match) { go(home, { replace: true }); return; }
   if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/people', '/system'].some((p) => pathname.startsWith(p))) {
-    go('/jobs', { replace: true }); return;
+    go('/sensors', { replace: true }); return;
   }
   if (signedIn && session.user.role === 'admin' && ['/jobs', '/report', '/sensors'].includes(pathname)) { go('/home', { replace: true }); return; }
 

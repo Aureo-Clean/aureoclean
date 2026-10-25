@@ -60,6 +60,7 @@ from .security import (
     verify_secret,
 )
 from .two_way import alert_text
+from .arduino import ArduinoCloud, ArduinoError
 from .mailer import Mailer, MailError
 from .sms import (
     LogSender,
@@ -323,6 +324,8 @@ class AureoService:
         self.sms = sms or LogSender(settings.log_dir / "sms_outbox.log")
         self.sim_promo = SimPromo(settings.sms_settings_file.with_name("sim_promo.json"))
         self.mailer = Mailer(settings.sms_settings_file.with_name("mail.json"))
+        self.arduino = ArduinoCloud(settings.sms_settings_file.with_name("arduino.json"))
+        self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
         self.store = store
         self.identity = identity
         prefix = settings.collection_prefix
@@ -772,6 +775,7 @@ class AureoService:
             raise Unauthorized("Your password is incorrect.")
         self.store.transact(self.C_USERS, session.uid,
                             lambda u: {**u, "lockPinHash": hash_secret(pin) if pin else None})
+        self._unlock_cache.pop(session.uid, None)
         self.audit("lock_pin_set" if pin else "lock_pin_removed", session.actor, session.uid)
         return {"hasLockPin": bool(pin)}
 
@@ -779,7 +783,12 @@ class AureoService:
         """Unlock the idle screen with the PIN (or the password when no PIN is set).
         Too many wrong tries signs the session out, so a full sign-in is needed."""
         key = f"unlock:{session.uid}"
-        profile = self.store.get(self.C_USERS, session.uid) or {}
+        hit = self._unlock_cache.get(session.uid)
+        if hit and time.monotonic() - hit[0] < 600:
+            profile = hit[1]
+        else:
+            profile = self.store.get(self.C_USERS, session.uid) or {}
+            self._unlock_cache[session.uid] = (time.monotonic(), profile)
         if profile.get("status") != "active":
             self.sessions.revoke(session.token)
             raise Unauthorized("Your account is no longer active.")
@@ -857,6 +866,30 @@ class AureoService:
         return result
 
     # ------------------------------------------------------------------ email set-up
+    # ------------------------------------------------------------------ Arduino Cloud (live sensors)
+    def sensors(self) -> dict:
+        if not self.arduino.configured:
+            return {"configured": False, "things": []}
+        try:
+            return {"configured": True, **self.arduino.readings()}
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+
+    def set_arduino(self, admin: Session, client_id: str, client_secret: str, org: str = "") -> dict:
+        try:
+            self.arduino.save(client_id, client_secret, org)
+            data = self.arduino.readings()  # check the key works straight away
+        except ArduinoError as exc:
+            raise BadRequest(str(exc))
+        self.audit("arduino_connected", admin.actor, None)
+        count = sum(len(t["properties"]) for t in data["things"])
+        return {"configured": True, "message": f"Connected: {len(data['things'])} thing(s), {count} sensor value(s)."}
+
+    def clear_arduino(self, admin: Session) -> dict:
+        self.arduino.clear()
+        self.audit("arduino_disconnected", admin.actor, None)
+        return {"configured": False}
+
     def mail_status(self) -> dict:
         return self.mailer.public_status()
 
