@@ -7,6 +7,7 @@ import {
   CATEGORY, empty, enterSubmits, errorBox, field, message, pageHead, priorityChip, refBox, say, segmented,
   select, skeletonList, statusChip, switchEl,
 } from './ui.js';
+import { aiFillBox, aiHeadline, aiTipCard, DANGER_NOTE, periodSummaryCard } from './insights.js';
 import { sensorsCard } from './sensors.js';
 
 const PUBLIC_SITE = 'https://aureo-clean.github.io/aureoclean/';
@@ -121,6 +122,7 @@ export function reportsView(_p, query) {
       h('a', { class: 'btn sm', href: '#/insights' }, icon('sparkle'), 'AI insights'),
       h('a', { class: 'btn sm', href: '#/charts' }, icon('chart'), 'Charts'),
       h('button', { class: 'btn primary sm', type: 'button', onclick: () => newReportDialog(() => view.refresh(true)) }, icon('plus'), 'New report')),
+    aiHeadline(),
     h('div', { class: 'row wrap' }, seg, h('div', { class: 'grow' }), h('div', { class: 'hide-phone', style: { display: 'contents' } }, find)),
     list);
   view.refresh = async (force) => {
@@ -190,7 +192,14 @@ function newReportDialog(onSaved) {
         onSaved && onSaved(r);
       } catch (err) { say(msg, err.message, 'error'); }
     }));
-    return [h('h2', null, 'New report'), h('div', { class: 'grid2' }, cat, prio), title,
+    const aiBox = aiFillBox((r) => {
+      if (r.category) cat.input.value = r.category;
+      if (r.title) { title.input.value = r.title; title.input.dispatchEvent(new Event('input')); }
+      if (r.location) { place.input.value = r.location.name; other.classList.add('hidden'); }
+      if (r.details) { details.input.value = r.details; details.input.dispatchEvent(new Event('input')); }
+      say(msg, r.possibleEmergency ? DANGER_NOTE : '', r.possibleEmergency ? 'warn' : '');
+    });
+    return [h('h2', null, 'New report'), aiBox, h('div', { class: 'grid2' }, cat, prio), title,
       h('div', { class: 'grid2' }, place, notify), other, details, msg,
       h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => close() }, 'Cancel'), save)];
   }, { wide: true });
@@ -208,10 +217,19 @@ export function reportDetailView({ id }) {
     const rows = await cached('reports', () => get('/admin/reports'), force ? 0 : 5000);
     const r = rows.find((x) => x.id === id);
     if (!r) return [empty('Report not found', 'It may have been removed.', 'search')];
-    return render(r);
+    return render(r, rows);
   }
 
-  function render(r) {
+  // Earlier reports from the same restroom (last 60 days) — worked out here, no AI.
+  function similar(r, rows) {
+    const since = Date.now() - 60 * 86400000;
+    const issues = new Set(r.issues || []);
+    return rows.filter((o) => o.id !== r.id && r.location && o.location === r.location && new Date(o.createdAt).getTime() >= since)
+      .map((o) => ({ ...o, same: o.title === r.title || (o.issues || []).some((c) => issues.has(c)) }))
+      .sort((a, b) => (b.same - a.same) || String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5);
+  }
+
+  function render(r, rows = []) {
     const notes = (r.notes || []).slice().reverse();
     const contact = r.contact && (r.contact.name || r.contact.phone);
     const facts = [
@@ -257,13 +275,24 @@ export function reportDetailView({ id }) {
         h('div', { class: 'stack' },
           h('section', { class: 'card', style: { padding: '4px 14px' } }, facts.map(([k, v]) => h('div', { class: 'kv' }, h('span', null, k), h('b', null, v))),
             r.details ? h('div', { class: 'kv', style: { display: 'block' } }, h('span', null, 'Details'), h('p', { style: { marginTop: '4px' } }, r.details)) : null),
-          h('section', { class: 'card stack tight' }, noteBox, msg, h('div', { class: 'row wrap' }, addNote, h('div', { class: 'grow' }), actions))),
+          h('section', { class: 'card stack tight' }, noteBox, msg, h('div', { class: 'row wrap' }, addNote, h('div', { class: 'grow' }), actions)),
+          aiTipCard(r, refresh)),
         h('section', { class: 'card stack' }, h('h2', null, 'What happened'),
           h('div', { class: 'timeline' },
             notes.map((n) => h('div', { class: 'item' }, h('span', { class: `dot ${n.status === 'resolved' ? 'ok' : n.by === 'sms' ? 'warn' : ''}` }),
               h('div', null, h('div', null, n.text), h('div', { class: 'when' }, `${when(n.at)}${n.by && n.by !== 'sms' ? ' · ' + n.by : ''}`)))),
             h('div', { class: 'item' }, h('span', { class: 'dot', style: { background: 'var(--blue)' } }),
-              h('div', null, h('div', null, `Reported (${sourceLabel(r)})`), h('div', { class: 'when' }, when(r.reportedAt || r.createdAt))))))),
+              h('div', null, h('div', null, `Reported (${sourceLabel(r)})`), h('div', { class: 'when' }, when(r.reportedAt || r.createdAt)))))),
+        (() => {
+          const sim = similar(r, rows);
+          if (!sim.length) return null;
+          return h('section', { class: 'card flush similar' },
+            h('div', { class: 'ins-title', style: { padding: '12px 14px 6px' } }, icon('reports'), h('b', null, 'Earlier here'),
+              h('span', { class: 'n' }, `${sim.filter((x) => x.same).length} same problem`)),
+            h('div', { class: 'list' }, sim.map((o) => h('a', { class: 'list-row', href: `#/reports/${encodeURIComponent(o.id)}` },
+              h('div', { class: 'grow' }, h('div', { class: 'row-title' }, o.title), h('div', { class: 'row-sub' }, `${ago(o.createdAt)}${o.same ? ' · same problem' : ''}`)),
+              statusChip(o.status)))));
+        })()),
     ];
   }
   const refresh = () => fill(body, () => load(true), (x) => x, { skeleton: 0 });
@@ -289,9 +318,10 @@ export function chartsView(_p, query) {
   const view = h('div', { class: 'stack enter' },
     h('header', { class: 'page-head' }, h('a', { class: 'back no-print', href: '#/reports', 'aria-label': 'Back to reports' }, '‹'),
       h('h1', null, 'Report charts'), h('div', { class: 'grow' }), h('div', { class: 'row no-print' }, seg, excel, pdf)),
-    h('p', { class: 'print-only muted' }, ''), body);
+    h('p', { class: 'print-only muted' }, ''), h('div', { class: 'ai-slot' }), body);
   function load() {
     view.querySelector('.print-only').textContent = `AureoClean · last ${days} days · printed ${new Date().toLocaleString()}`;
+    view.querySelector('.ai-slot').replaceChildren(periodSummaryCard(days));
     fill(body, () => get(`/admin/reports/summary?days=${days}`), ({ summary }) => charts(summary), { skeleton: 3 });
   }
   load();

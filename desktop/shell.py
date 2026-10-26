@@ -206,6 +206,15 @@ def main() -> int:
             self.tell({"event": "toast", "text": text, "kind": kind})
 
         def on_message(self, msg: dict):
+            # Anything going wrong here is shown on screen and written to logs/desktop-crash.log.
+            try:
+                self._handle(msg)
+            except Exception as exc:  # noqa: BLE001
+                sys.excepthook(type(exc), exc, exc.__traceback__)
+                self.toast(f"The Pi window had a problem ({type(exc).__name__}: {str(exc)[:120]}). Details in logs/desktop-crash.log.",
+                           "error")
+
+        def _handle(self, msg: dict):
             action = msg.get("action")
             if action == "ready":
                 self.tell({"event": "kiosk", "on": self.kiosk})

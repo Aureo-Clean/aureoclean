@@ -51,6 +51,15 @@ class ModelGone(LlmError):
     """The provider doesn't offer this model (any more) — e.g. Google retired it."""
 
 
+class KeyRefused(LlmError):
+    """The provider says the API key is wrong (or not allowed)."""
+
+
+class CutShort(LlmError):
+    """The answer stopped at the token limit before any text came out (thinking models use
+    part of the limit to think first)."""
+
+
 _SKIP_GEMINI = re.compile(r"lite|tts|live|image|audio|embed|robotic|native|computer|exp|learnlm|thinking|vision|aqa", re.I)
 
 
@@ -121,6 +130,7 @@ class LlmClient:
             "model": saved.get("model") or os.environ.get("AUREOCLEAN_LLM_MODEL", "").strip() or info.get("model", ""),
             "url": saved.get("url") or os.environ.get("AUREOCLEAN_LLM_URL", "").strip() or info.get("url", ""),
             "daily": bool(saved.get("daily", True)),
+            "autoTips": bool(saved.get("autoTips", True)),
             "dailyHour": int(saved.get("dailyHour", 6)) if str(saved.get("dailyHour", 6)).isdigit() else 6,
         }
 
@@ -139,7 +149,7 @@ class LlmClient:
             "providerLabel": PROVIDERS.get(s["provider"], {}).get("label", ""),
             "model": s["model"], "url": s["url"] if s["provider"] == "openai" else "",
             "keyHint": f"…{key[-4:]}" if len(key) >= 8 else ("set" if key else ""),
-            "daily": s["daily"], "dailyHour": s["dailyHour"],
+            "daily": s["daily"], "dailyHour": s["dailyHour"], "autoTips": s["autoTips"],
             "providers": [{"id": k, **{x: v[x] for x in ("label", "model", "needsKey", "keyUrl", "note")},
                            "url": v.get("url", "")} for k, v in PROVIDERS.items()],
         }
@@ -165,7 +175,8 @@ class LlmClient:
             url = ""
         data = {"provider": provider, "apiKey": api_key, "model": model, "url": url,
                 "daily": old.get("daily", True) if daily is None else bool(daily),
-                "dailyHour": old.get("dailyHour", 6) if daily_hour is None else max(0, min(23, int(daily_hour)))}
+                "dailyHour": old.get("dailyHour", 6) if daily_hour is None else max(0, min(23, int(daily_hour))),
+                "autoTips": old.get("autoTips", True)}
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(data, indent=2))
         try:
@@ -202,7 +213,7 @@ class LlmClient:
         except requests.RequestException as exc:
             raise LlmError(f"Can't reach {PROVIDERS[s['provider']]['label']}. Check the Pi's internet.") from exc
         if resp.status_code in (401, 403):
-            raise LlmError("The AI provider refused the API key. Check it in AI settings (or make a new key).")
+            raise KeyRefused("The AI provider refused the API key. Check it in AI settings (or make a new key).")
         if resp.status_code >= 400:
             return []
         try:
@@ -211,11 +222,14 @@ class LlmClient:
             return []
         return [m for m in (data.get(key) or []) if isinstance(m, dict)] if isinstance(data, dict) else []
 
-    def set_daily(self, daily: bool, hour: Optional[int] = None) -> None:
+    def set_daily(self, daily: Optional[bool] = None, hour: Optional[int] = None, auto_tips: Optional[bool] = None) -> None:
         data = self._saved()
-        data["daily"] = bool(daily)
+        if daily is not None:
+            data["daily"] = bool(daily)
         if hour is not None:
             data["dailyHour"] = max(0, min(23, int(hour)))
+        if auto_tips is not None:
+            data["autoTips"] = bool(auto_tips)
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(data, indent=2))
         try:
@@ -244,15 +258,23 @@ class LlmClient:
         self.switched: Optional[tuple[str, str]] = None
         s = self.settings()
         if s["provider"] == "openai":
-            return self._ask_once(system, user, max_tokens)
+            return self._ask_roomy(system, user, max_tokens)
         if not s["model"]:
             self._replace_model("")
-            return self._ask_once(system, user, max_tokens)
+            return self._ask_roomy(system, user, max_tokens)
         try:
-            return self._ask_once(system, user, max_tokens)
+            return self._ask_roomy(system, user, max_tokens)
         except ModelGone:
             self._replace_model(s["model"])
+            return self._ask_roomy(system, user, max_tokens)
+
+    def _ask_roomy(self, system: str, user: str, max_tokens: int) -> str:
+        """Thinking models spend part of the token limit thinking; if nothing was left for
+        the answer, ask once more with much more room."""
+        try:
             return self._ask_once(system, user, max_tokens)
+        except CutShort:
+            return self._ask_once(system, user, max(max_tokens * 4, 16384))
 
     def _replace_model(self, old: str) -> str:
         provider = self.settings()["provider"]
@@ -311,8 +333,8 @@ class LlmClient:
         if status >= 400 and isinstance(data, dict):
             err = data.get("error")
             msg = (err.get("message") if isinstance(err, dict) else str(err or "")) or ""
-        if status in (401, 403):
-            raise LlmError("The AI provider refused the API key. Check it in AI settings (or make a new key).")
+        if status in (401, 403) or (status == 400 and re.search(r"api.?key", msg, re.I)):
+            raise KeyRefused("The AI provider refused the API key. Check it in AI settings (or make a new key).")
         if status == 404 or (status == 400 and re.search(r"not (found|supported)|no longer|deprecat|retired|unknown model|invalid model", msg, re.I)):
             raise ModelGone("That model isn't offered any more. Check the model in AI settings.")
         if status == 429:
@@ -325,10 +347,17 @@ class LlmClient:
                 text = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts") or [])
                 if not text and cand.get("finishReason") in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT"):
                     raise LlmError("The AI declined to answer this one. Try asking differently.")
+                if not text.strip() and cand.get("finishReason") in ("MAX_TOKENS", None, ""):
+                    raise CutShort("The AI ran out of room before answering.")
             elif provider == "claude":
                 text = "".join(b.get("text", "") for b in data.get("content") or [] if b.get("type") == "text")
+                if not text.strip() and data.get("stop_reason") == "max_tokens":
+                    raise CutShort("The AI ran out of room before answering.")
             else:
-                text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                choice = (data.get("choices") or [{}])[0]
+                text = (choice.get("message") or {}).get("content") or ""
+                if not text.strip() and choice.get("finish_reason") == "length":
+                    raise CutShort("The AI ran out of room before answering.")
         except (AttributeError, IndexError, TypeError) as exc:
             raise LlmError("The AI's answer couldn't be read.") from exc
         if not text.strip():

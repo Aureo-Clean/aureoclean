@@ -157,6 +157,9 @@ class HealthMonitor:
                                   f"Last made {when}." + (" The daily run hasn't happened — check AI settings." if stale else "")))
             else:
                 out.append(_check("job_insights", "AI insights", "off", "Set up; no insights made yet."))
+            tips = self.svc.job_status.get("report_ai")
+            if tips and tips.get("error"):
+                out.append(_check("job_report_ai", "AI tips on reports", "warn", f"Last try failed: {tips['error'][:140]}"))
         return out
 
     def pi(self):

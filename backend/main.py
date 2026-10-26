@@ -109,13 +109,30 @@ class LlmBody(BaseModel):
     url: str = Field(default="", max_length=300)
 
 
+class ClientLogBody(BaseModel):
+    message: str = Field(max_length=600)
+    where: str = Field(default="", max_length=120)
+    pi: bool = False
+    kiosk: bool = False
+
+
 class AskBody(BaseModel):
     question: str = Field(max_length=300)
 
 
 class DailyBody(BaseModel):
-    daily: bool
+    daily: Optional[bool] = None
     hour: Optional[int] = Field(default=None, ge=0, le=23)
+    autoTips: Optional[bool] = None
+
+
+class FillBody(BaseModel):
+    text: str = Field(max_length=400)
+
+
+class PeriodBody(BaseModel):
+    days: int = Field(default=30, ge=1, le=365)
+    force: bool = False
 
 
 class ArduinoBody(BaseModel):
@@ -180,6 +197,7 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     # Sign-in and sign-up attempts from the Wi-Fi website, per phone/laptop.
     wifi_auth_limit = RateLimit(20, 600)
+    client_log_limit = RateLimit(30, 300)
 
     def via_wifi(request: Request) -> bool:
         web = getattr(app.state, "web", None)
@@ -514,6 +532,26 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
             return JSONResponse({"detail": "QR codes need the segno package (run Update AureoClean)."}, status_code=404)
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
+    @app.post("/client-log")
+    def client_log(body: ClientLogBody, request: Request):
+        """Errors from the screens (Pi window or phones), written to logs/backend.log so they can be found."""
+        who = request.client.host if request.client else "?"
+        if client_log_limit.allow(who):
+            text = " ".join(body.message.split())[:600]
+            log.warning("Screen error (%s%s) at %s: %s", "Pi" if body.pi else who, ", kiosk" if body.kiosk else "",
+                        body.where[:120] or "?", text)
+        return {"ok": True}
+
+    @app.get("/qr.svg")
+    def link_qr(url: str, _: Session = Depends(any_user)):
+        """A QR code for a website, so a link can be opened on a phone (kiosk mode blocks websites)."""
+        if len(url) > 300 or not url.startswith("https://"):
+            return JSONResponse({"detail": "Only https links."}, status_code=400)
+        svg = qr_svg(url)
+        if svg is None:
+            return JSONResponse({"detail": "QR codes need the segno package (run Update AureoClean)."}, status_code=404)
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
     # ------------------------------------------------ live sensors (any role)
     @app.get("/sensors")
     def sensors(_: Session = Depends(any_user)):
@@ -546,7 +584,7 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     @app.post("/admin/insights/daily")
     def insights_daily(body: DailyBody, session: Session = Depends(admin)):
-        return svc().set_insights_daily(session, body.daily, body.hour)
+        return svc().set_insights_daily(session, body.daily, body.hour, body.autoTips)
 
     @app.post("/admin/llm")
     def llm_set(body: LlmBody, session: Session = Depends(admin)):
@@ -555,6 +593,22 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     @app.post("/admin/llm/clear")
     def llm_clear(session: Session = Depends(admin)):
         return svc().clear_llm(session)
+
+    @app.post("/reports/{report_id}/ai")
+    def report_ai_tip(report_id: str, session: Session = Depends(any_user)):
+        return svc().report_tip(session, report_id)
+
+    @app.post("/reports/ai-fill")
+    def report_ai_fill(body: FillBody, session: Session = Depends(any_user)):
+        return svc().report_fill(session, body.text)
+
+    @app.get("/admin/reports/summary/ai")
+    def period_summary_saved(days: int = 30, _: Session = Depends(admin)):
+        return svc().period_summary_saved(days)
+
+    @app.post("/admin/reports/summary/ai")
+    def period_summary(body: PeriodBody, session: Session = Depends(admin)):
+        return svc().period_summary(session, body.days, body.force)
 
     @app.get("/insights/today")
     def insights_today(_: Session = Depends(any_user)):

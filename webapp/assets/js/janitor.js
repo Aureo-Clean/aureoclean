@@ -1,6 +1,6 @@
 // Janitor screens: My jobs (the simple report view), Report a problem, Live sensors.
 import { ago, busy, cached, firstName, get, h, icon, peek, post, session, toast, invalidate } from './core.js';
-import { tipsCard } from './insights.js';
+import { aiFillBox, aiJobTip, DANGER_NOTE, tipsCard } from './insights.js';
 import { sensorsCard } from './sensors.js';
 import { empty, errorBox, message, pageHead, priorityChip, say, segmented } from './ui.js';
 
@@ -52,7 +52,8 @@ export function jobsView(_p, query) {
         h('div', { class: 'grow' }), h('span', { class: 'small muted' }, ago(where === 'done' ? j.resolvedAt : j.createdAt))),
       h('div', { class: 'title' }, j.title),
       h('div', { class: 'where' }, icon('pin'), j.location || 'No place given'),
-      j.details ? h('div', { class: 'details' }, j.details) : null);
+      j.details ? h('div', { class: 'details' }, j.details) : null,
+      where !== 'done' ? aiJobTip(j.ai) : null);
     if (where === 'open') {
       const take = h('button', { class: 'btn primary lg block', type: 'button' }, 'I\'ll take it');
       take.addEventListener('click', () => busy(take, 'Taking…', async () => {
@@ -138,7 +139,26 @@ export function reportProblemView() {
       } catch (err) { say(msg, err.message, 'error'); }
     }));
     note.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !send.disabled) send.click(); });
+    const aiBox = aiFillBox((r) => {
+      if (r.location) {
+        const spot = opts.locations.find((l) => l.code === r.location.code);
+        if (spot) {
+          place = spot;
+          tiles.querySelectorAll('.tile').forEach((t, i) => t.setAttribute('aria-pressed', String(opts.locations[i] === spot)));
+        }
+      }
+      const shown = COMMON.filter((c) => known.has(c));
+      if (r.issues.length) {
+        picked.clear();
+        r.issues.forEach((c) => picked.add(shown.includes(c) ? c : 'other'));
+        chips.querySelectorAll('.chipbtn').forEach((b, i) => b.setAttribute('aria-pressed', String(picked.has(shown[i]))));
+      }
+      if (r.details) note.value = r.details;
+      update();
+      if (r.possibleEmergency) say(msg, DANGER_NOTE, 'warn');
+    });
     return [
+      aiBox,
       h('div', { class: 'eyebrow' }, '1 · Where?'), tiles,
       h('div', { class: 'eyebrow', style: { marginTop: '4px' } }, '2 · What\'s wrong? ', h('span', { style: { textTransform: 'none', letterSpacing: '0', fontWeight: '400' } }, '(tap all that apply)')),
       chips,

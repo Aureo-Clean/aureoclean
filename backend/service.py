@@ -62,7 +62,8 @@ from .security import (
 from .two_way import alert_text
 from .arduino import ArduinoCloud, ArduinoError
 from .insights import Insights
-from .llm import LlmClient, LlmError
+from .report_ai import ReportAI
+from .llm import KeyRefused, LlmClient, LlmError, ModelGone
 from .mailer import Mailer, MailError
 from .sms import (
     LogSender,
@@ -329,6 +330,7 @@ class AureoService:
         self.arduino = ArduinoCloud(settings.sms_settings_file.with_name("arduino.json"))
         self.llm = LlmClient(settings.sms_settings_file.with_name("llm.json"))
         self.insights = Insights(self)
+        self.report_ai = ReportAI(self)
         self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
         self.store = store
         self.identity = identity
@@ -907,15 +909,29 @@ class AureoService:
     def set_llm(self, admin: Session, provider: str, api_key: str = "", model: str = "", url: str = "") -> dict:
         """Save the AI settings, then check them with a tiny question; the old settings stay if it fails."""
         old = self.llm.file.read_text() if self.llm.file.exists() else None
-        try:
-            self.llm.save(provider, api_key, model, url)
-            reply = self.llm.ask("Reply with JSON only.", 'Reply exactly with {"ok": true}', max_tokens=50)
-        except LlmError as exc:
+
+        def put_back():
             if old is None:
                 self.llm.clear()
             else:
                 self.llm.file.write_text(old)
+        try:
+            self.llm.save(provider, api_key, model, url)
+        except LlmError as exc:
             raise BadRequest(str(exc))
+        try:
+            reply = self.llm.ask("Reply with JSON only.", 'Reply exactly with {"ok": true}', max_tokens=1024)
+        except (KeyRefused, ModelGone) as exc:
+            put_back()            # the key or model really is wrong: don't keep it
+            raise BadRequest(str(exc))
+        except LlmError as exc:
+            # The key itself wasn't refused (busy, free limit for now, slow internet …): keep the
+            # settings — set up once — and say what happened.
+            self.audit("ai_set_up", admin.actor, None, {"provider": provider, "tested": False})
+            self.insights.last_error = f"Saved, but the first test didn't finish: {exc}"
+            st = self.llm.public_status()
+            return {**st, "warning": True,
+                    "message": f"Saved {st['providerLabel']}. The test didn't finish: {exc} Insights will work once it answers."}
         self.audit("ai_set_up", admin.actor, None, {"provider": provider, "model": self.llm.settings()["model"]})
         st = self.llm.public_status()
         note = "" if '"ok"' in reply.replace(" ", "") else " (it answered, but not quite as asked — results may vary)"
@@ -931,10 +947,32 @@ class AureoService:
         self.audit("ai_removed", admin.actor, None)
         return self.llm.public_status()
 
-    def set_insights_daily(self, admin: Session, daily: bool, hour: Optional[int] = None) -> dict:
-        self.llm.set_daily(daily, hour)
-        self.audit("insights_daily", admin.actor, None, {"daily": daily, "hour": hour})
+    def set_insights_daily(self, admin: Session, daily: Optional[bool] = None, hour: Optional[int] = None,
+                           auto_tips: Optional[bool] = None) -> dict:
+        self.llm.set_daily(daily, hour, auto_tips)
+        self.audit("insights_daily", admin.actor, None, {"daily": daily, "hour": hour, "autoTips": auto_tips})
         return self.llm.public_status()
+
+    def report_tip(self, session: Session, report_id: str) -> dict:
+        try:
+            return self.report_ai.tip(report_id, session.actor)
+        except LlmError as exc:
+            raise BadRequest(str(exc))
+
+    def report_fill(self, session: Session, text: str) -> dict:
+        try:
+            return self.report_ai.fill(text, public_locations(), admin_form=session.role == ROLE_ADMIN)
+        except LlmError as exc:
+            raise BadRequest(str(exc))
+
+    def period_summary(self, admin: Session, days: int, force: bool = False) -> dict:
+        try:
+            return self.report_ai.period(days, admin.actor, force)
+        except LlmError as exc:
+            raise BadRequest(str(exc))
+
+    def period_summary_saved(self, days: int) -> dict:
+        return {"summary": self.report_ai.period_saved(days), "aiReady": self.llm.configured}
 
     def start_insights(self, admin: Session) -> dict:
         try:
@@ -1670,6 +1708,10 @@ class AureoService:
             **(extra or {}),
         }
         self.store.create(self.C_REPORTS, report_id, report)
+        try:
+            self.report_ai.queue_new(report_id)   # an AI tip for the janitors, in the background (advice only)
+        except Exception:  # noqa: BLE001 - never let the AI get in the way of a report
+            pass
         return {"id": report_id, **report}
 
     def _notify_async(self, report_id: str, recipients: list[dict], text: str) -> None:
@@ -1797,6 +1839,8 @@ class AureoService:
             "details": (r.get("details") or "")[:300], "createdAt": r.get("reportedAt") or r.get("createdAt"),
             "takenBy": holder.get("name") or holder.get("username"), "mine": holder.get("uid") == me,
             "doneBy": done_by.get("name") or done_by.get("username"), "resolvedAt": r.get("resolvedAt"),
+            "ai": {k: (r.get("ai") or {}).get(k) for k in ("summary", "steps", "bring", "minutes", "safety", "helper")}
+            if r.get("ai") else None,
         }
 
     def janitor_jobs(self, session: Session) -> dict:

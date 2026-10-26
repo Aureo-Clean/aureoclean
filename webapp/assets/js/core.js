@@ -291,9 +291,44 @@ window.AureoShell = {
 shell.listeners.add((msg) => { if (msg.event === 'kiosk') shell.kiosk = !!msg.on; });
 shell.listeners.add((msg) => { if (msg.event === 'toast') toast(msg.text, msg.kind || ''); });
 
+// Errors on any screen go to the service log (logs/backend.log), so they can be looked up later.
+let reported = 0;
+function reportError(message) {
+  if (reported >= 10 || !message) return;
+  reported += 1;
+  try {
+    fetch('/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ message: String(message).slice(0, 600), where: location.hash.slice(0, 120), pi: shell.isPi, kiosk: shell.kiosk }) })
+      .catch(() => {});
+  } catch { /* never let reporting cause trouble */ }
+}
+window.addEventListener('error', (e) => reportError(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  if (r instanceof ApiError) return;   // shown on the screen already
+  reportError(r && (r.stack || r.message) ? `${r.message} ${String(r.stack || '').split('\n')[1] || ''}` : String(r));
+});
+
 export function openExternal(url) {
+  if (shell.isPi && shell.kiosk) { linkOnPhone(url); return; }   // kiosk mode keeps other websites off the Pi
   if (shell.isPi) shell.send('open', { url });
   else window.open(url, '_blank', 'noopener');
+}
+
+// Kiosk mode: show the link as a QR code to open on a phone instead of an error.
+function linkOnPhone(url) {
+  const img = h('div', { class: 'qr-box', 'aria-label': 'QR code' }, h('div', { class: 'skeleton', style: { width: '180px', height: '180px' } }));
+  api('GET', `/qr.svg?url=${encodeURIComponent(url)}`, undefined, { raw: true, timeout: 15000 })
+    .then((r) => r.blob())
+    .then((b) => img.replaceChildren(h('img', { src: URL.createObjectURL(b), alt: '', width: 180, height: 180 })))
+    .catch(() => img.replaceChildren());
+  modal((close) => [
+    h('h2', null, 'Open this on your phone'),
+    h('p', { class: 'muted', style: { margin: '0' } }, 'Kiosk mode keeps other websites off this screen. Scan the code with your phone\'s camera, or type the address:'),
+    img,
+    h('div', { class: 'link-text' }, url.replace(/^https:\/\//, '')),
+    h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'button', onclick: () => close() }, 'Done')),
+  ]);
 }
 
 // ------------------------------------------------------------------ data cache

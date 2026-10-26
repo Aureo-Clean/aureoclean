@@ -220,6 +220,7 @@ class Insights:
         with self._lock:
             self.running = True
             self.started_at = datetime.now(timezone.utc).isoformat()
+            self.last_error = None
         self._run(actor, reason)
         if self.last_error:
             raise LlmError(self.last_error)
@@ -229,7 +230,7 @@ class Insights:
         began = time.monotonic()
         try:
             prompt, counts = self._prompt()
-            text = self.service.llm.ask(prompt["system"], prompt["user"], max_tokens=3000)
+            text = self.service.llm.ask(prompt["system"], prompt["user"], max_tokens=8192)
             parsed = parse_json(text)
             result = clean_insight(parsed if parsed is not None else {"raw": text})
             s = self.service.llm.settings()
@@ -241,6 +242,7 @@ class Insights:
                 "days": DAYS,
             }
             self.service.store.set(self.collection, "latest", doc)
+            self.last_error = None
             self.service.audit("insights_made", actor, None, {"reason": reason, "reports": counts["reports"]})
             self.service.job_status["insights"] = {"at": doc["createdAt"], "error": None}
         except LlmError as exc:
@@ -264,7 +266,7 @@ class Insights:
             raise LlmError("That's a lot of questions this hour — try again a bit later.")
         self._questions.append(now)
         prompt, counts = self._prompt(answer_format=ASK_FORMAT, system=ASK_SYSTEM, question=question)
-        text = self.service.llm.ask(prompt["system"], prompt["user"], max_tokens=900)
+        text = self.service.llm.ask(prompt["system"], prompt["user"], max_tokens=4096)
         parsed = parse_json(text)
         self.service.audit("insights_question", actor, None, {"question": question[:80]})
         return {**clean_answer(parsed, "" if parsed else text), "question": question, **counts,

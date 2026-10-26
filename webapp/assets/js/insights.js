@@ -1,7 +1,7 @@
 // AI insights (admins): an AI model reads the reports and the live sensor readings and
 // suggests what to do — and answers questions about them. Advice only: alerts are decided
 // by fixed rules, never by the AI. Janitors see the top suggestions on My jobs.
-import { ago, busy, get, h, icon, modal, openExternal, post, shell, toast } from './core.js';
+import { ago, busy, cached, get, h, icon, invalidate, modal, openExternal, post, session, shell, toast } from './core.js';
 import { enterSubmits, field, message, say, switchEl } from './ui.js';
 
 const PRIORITY = { high: ['Do first', 'red'], medium: ['Soon', 'amber'], low: ['When you can', ''] };
@@ -50,7 +50,7 @@ function settingsForm(st, { onSaved, inline = false } = {}) {
     try {
       const r = await post('/admin/llm', { provider, apiKey: key.input.value, model: model.input.value, url: url.input.value },
         { timeout: provider === 'openai' ? 620000 : 130000 });
-      toast(r.message, 'success');
+      toast(r.message, r.warning ? 'error' : 'success');
       onSaved && onSaved(r);
     } catch (err) { say(msg, err.message, 'error'); }
   }));
@@ -72,9 +72,14 @@ function settingsDialog(st, after) {
     remove.addEventListener('click', () => busy(remove, '…', async () => {
       try { await post('/admin/llm/clear'); close(); toast('AI removed from this Pi.'); after(); } catch (err) { say(form.msg, err.message, 'error'); }
     }));
+    const tips = switchEl(st.autoTips !== false, async (on, b) => {
+      try { await post('/admin/insights/daily', { autoTips: on }); } catch (err) { b.set(!on); toast(err.message, 'error'); }
+    }, 'AI tips on new reports');
     return [h('h2', null, 'AI settings'),
       h('div', { class: 'row', style: { gap: '10px' } }, daily, h('div', { class: 'grow' }, h('b', { class: 'small' }, 'Every morning'),
         h('div', { class: 'small muted' }, 'Make fresh insights once a day')), hour),
+      h('div', { class: 'row', style: { gap: '10px' } }, tips, h('div', { class: 'grow' }, h('b', { class: 'small' }, 'AI tips on new reports'),
+        h('div', { class: 'small muted' }, 'Steps and what to bring, for the janitors (up to 25 a day)'))),
       ...form.body,
       h('div', { class: 'actions' }, remove, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Close'), form.save)];
   }, { wide: true });
@@ -184,7 +189,8 @@ export function insightsView() {
       body.replaceChildren(h('section', { class: 'card ins-setup stack' },
         h('div', { class: 'row', style: { gap: '12px', alignItems: 'flex-start' } }, h('div', { class: 'ins-orb' }, icon('sparkle')),
           h('div', null, h('h2', { style: { margin: '0', fontSize: '17px' } }, 'Set up the AI once'),
-            h('p', { class: 'small muted', style: { margin: '2px 0 0' } }, 'It reads the reports and sensor readings and suggests what the team should do. Google Gemini has a free key — no card needed.'))),
+            h('p', { class: 'small muted', style: { margin: '2px 0 0' } }, 'It reads the reports and sensor readings and suggests what the team should do. Google Gemini has a free key — no card needed.'),
+            h('p', { class: 'small', style: { margin: '6px 0 0', color: 'var(--blue-dark)' } }, 'Tip: it\'s easiest from your phone — open AureoClean on the Wi-Fi website, sign in as admin, and paste the key here. You only do this once.'))),
         ...form.body, h('div', { class: 'actions' }, form.save)));
       return;
     }
@@ -241,4 +247,111 @@ export function tipsCard() {
     card.classList.remove('hidden');
   }).catch(() => {});
   return card;
+}
+
+// ================================================================== AI inside reporting
+const HELPER = { maintenance: 'Maintenance', plumber: 'a plumber', electrician: 'an electrician', security: 'Security',
+  'nurse/clinic': 'the clinic', supplier: 'the supplier' };
+
+/** The AI tip on a report (report page). `r` is the report; `after()` reloads it. */
+export function aiTipCard(r, after) {
+  const t = r.ai;
+  const btn = h('button', { class: `btn sm ${t ? 'ghost' : 'primary'}`, type: 'button' }, icon(t ? 'reload' : 'sparkle'), t ? 'New tip' : 'Get an AI tip');
+  const msg = h('div', { class: 'msg hidden' });
+  btn.addEventListener('click', () => busy(btn, 'Thinking…', async () => {
+    try { await post(`/reports/${encodeURIComponent(r.id)}/ai`, {}, { timeout: 620000 }); invalidate('reports', 'jobs'); after(); }
+    catch (err) { msg.textContent = err.message; msg.className = 'msg error'; }
+  }));
+  const head = h('div', { class: 'ins-title' }, icon('sparkle'), h('b', null, 'AI tip'), h('div', { class: 'grow' }), btn);
+  if (!t) {
+    return h('section', { class: 'card ins-card ai-tip' }, head,
+      h('p', { class: 'small muted', style: { margin: '0' } }, 'Likely cause, steps, what to bring and how long it takes — from this report, similar past reports and the sensors.'), msg);
+  }
+  return h('section', { class: 'card ins-card ai-tip' }, head,
+    t.summary ? h('p', { class: 'ai-sum' }, t.summary) : null,
+    t.safety ? h('div', { class: 'ai-safety' }, icon('shield'), t.safety) : null,
+    h('div', { class: 'ai-facts' },
+      t.likelyCause ? h('div', null, h('span', null, 'Likely cause'), h('b', null, t.likelyCause)) : null,
+      t.minutes ? h('div', null, h('span', null, 'Takes about'), h('b', null, `${t.minutes} min`)) : null,
+      t.helper ? h('div', null, h('span', null, 'May need'), h('b', null, HELPER[t.helper] || t.helper)) : null),
+    t.bring && t.bring.length ? h('div', { class: 'ai-bring' }, h('span', { class: 'small muted' }, 'Bring'), t.bring.map((x) => h('span', { class: 'chip navy' }, x))) : null,
+    t.steps && t.steps.length ? h('ol', { class: 'ai-steps' }, t.steps.map((x) => h('li', null, x))) : null,
+    t.pattern ? h('div', { class: 'ai-pattern small' }, icon('chart'), t.pattern) : null,
+    h('div', { class: 'ins-meta' }, `AI suggestion · ${ago(t.at)} · check before acting`), msg);
+}
+
+/** Compact AI tip on a janitor's job card. */
+export function aiJobTip(ai) {
+  if (!ai || (!ai.summary && !(ai.steps || []).length)) return null;
+  const bring = (ai.bring || []).slice(0, 5).join(', ');
+  return h('details', { class: 'ai-job' },
+    h('summary', null, icon('sparkle'), h('span', null, bring ? `Bring: ${bring}` : 'AI tip'), ai.minutes ? h('span', { class: 'muted' }, ` · ~${ai.minutes} min`) : null),
+    ai.safety ? h('div', { class: 'ai-safety' }, icon('shield'), ai.safety) : null,
+    (ai.steps || []).length ? h('ol', { class: 'ai-steps' }, ai.steps.map((x) => h('li', null, x))) : null,
+    h('div', { class: 'ins-meta' }, 'AI suggestion — check before acting'));
+}
+
+/** "Say it in your own words" — the AI fills the report form; the person checks and sends. */
+export function aiFillBox(onResult) {
+  const input = h('input', { class: 'input', type: 'text', maxlength: 400, 'aria-label': 'Describe the problem',
+    placeholder: 'e.g. baradong inidoro sa 2nd floor male, 2nd stall' });
+  const btn = h('button', { class: 'btn', type: 'button' }, icon('sparkle'), 'Fill in for me');
+  const note = h('div', { class: 'small muted' }, 'Type it like a text message (English or Tagalog). The AI fills in the form below — check it, then send.');
+  const run = () => busy(btn, 'Reading…', async () => {
+    try {
+      const r = await post('/reports/ai-fill', { text: input.value }, { timeout: 620000 });
+      onResult(r, input.value);
+      note.textContent = r.possibleEmergency ? DANGER_NOTE : 'Filled in by AI — check the restroom and problems below, then send.';
+      note.className = r.possibleEmergency ? 'msg warn' : 'small ai-filled';
+    } catch (err) { note.textContent = err.message; note.className = 'small error-text'; }
+  });
+  btn.addEventListener('click', run);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); run(); } });
+  return h('section', { class: 'ai-fill' }, h('div', { class: 'ai-fill-head' }, icon('sparkle'), h('b', null, 'Say it in your own words')),
+    h('div', { class: 'row', style: { gap: '8px' } }, input, btn), note);
+}
+
+export const DANGER_NOTE = 'This sounds like it could be dangerous. If it is, choose Emergency yourself — that texts everyone right away.';
+
+/** The written AI summary for the Charts period (and its PDF). */
+export function periodSummaryCard(days) {
+  const card = h('section', { class: 'card ins-card ai-period' });
+  function draw(d) {
+    const s = d.summary;
+    const btn = h('button', { class: `btn sm no-print ${s ? 'ghost' : 'primary'}`, type: 'button' }, icon(s ? 'reload' : 'sparkle'), s ? 'Rewrite' : 'Write AI summary');
+    btn.addEventListener('click', () => busy(btn, 'Writing…', async () => {
+      try { draw({ summary: await post('/admin/reports/summary/ai', { days, force: !!s }, { timeout: 620000 }), aiReady: true }); }
+      catch (err) { toast(err.message, 'error'); }
+    }));
+    const head = h('div', { class: 'ins-title' }, icon('sparkle'), h('b', null, s && s.title ? s.title : `AI summary · last ${days} days`), h('div', { class: 'grow' }),
+      d.aiReady ? btn : h('a', { class: 'small no-print', href: '#/insights' }, 'Set up the AI ›'));
+    if (!s) {
+      card.replaceChildren(head, h('p', { class: 'small muted', style: { margin: '0' } },
+        d.aiReady ? 'A short written report of this period — what went well, what to watch, what to do next. Included in the PDF.'
+          : 'Set up AI insights to get a written report of this period.'));
+      card.classList.add('no-print');
+      return;
+    }
+    card.classList.remove('no-print');
+    const list = (title, items) => (items && items.length ? h('div', { class: 'ai-col' }, h('div', { class: 'eyebrow' }, title), h('ul', null, items.map((x) => h('li', null, x)))) : null);
+    card.replaceChildren(head, h('p', { class: 'ai-overview' }, s.overview),
+      h('div', { class: 'ai-cols' }, list('Went well', s.highlights), list('Watch', s.concerns), list('Next steps', s.nextSteps)),
+      h('div', { class: 'ins-meta' }, `Written by AI ${ago(s.createdAt)} from ${s.reports} reports · check before sharing`));
+  }
+  card.replaceChildren(h('div', { class: 'skeleton', style: { height: '16px', width: '50%' } }));
+  get(`/admin/reports/summary/ai?days=${days}`).then(draw).catch(() => card.replaceChildren());
+  return card;
+}
+
+/** One line on the Reports page: the latest AI summary, linking to AI insights. */
+export function aiHeadline() {
+  const a = h('a', { class: 'ai-headline hidden', href: '#/insights' });
+  if (!session.user || session.user.role !== 'admin') return a;
+  cached('insights-head', () => get('/admin/insights'), 120000).then((st) => {
+    const d = st.latest;
+    if (!d || Date.now() - new Date(d.createdAt).getTime() > 36 * 3600000) return;
+    a.replaceChildren(icon('sparkle'), h('span', { class: 'grow' }, h('b', null, 'AI: '), d.headline), h('span', { class: 'small' }, 'Insights ›'));
+    a.classList.remove('hidden');
+  }).catch(() => {});
+  return a;
 }

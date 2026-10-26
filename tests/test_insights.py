@@ -64,8 +64,12 @@ class FakeAI:
             return Resp(200, {"models": self.gemini_models})
         return Resp(200, {"data": self.claude_models})
 
+    think = 0          # tokens a "thinking" model spends before answering (like Gemini 2.5+/3.x)
+
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        if "generativelanguage" in url and json["generationConfig"]["maxOutputTokens"] <= self.think:
+            return Resp(200, {"candidates": [{"content": {"parts": [{"text": ""}]}, "finishReason": "MAX_TOKENS"}]})
         if self.status != 200:
             return Resp(self.status, {"error": {"message": "nope"}})
         if "generativelanguage" in url:
@@ -76,17 +80,22 @@ class FakeAI:
             return Resp(404, {"error": {"type": "not_found_error", "message": f"model: {json['model']}"}})
         user = (json.get("contents") or [{}])[0].get("parts", [{}])[0].get("text") if "contents" in json else \
             (json["messages"][-1]["content"])
+        self.prompts = getattr(self, "prompts", []) + [user]
+        text = self.answer(user)
+        if "generativelanguage" in url:
+            return Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]})
+        if "anthropic" in url:
+            return Resp(200, {"content": [{"type": "text", "text": text}]})
+        return Resp(200, {"choices": [{"message": {"content": text}}]})
+
+    def answer(self, user):
         if '{"ok": true}' in user:
             text = '{"ok": true}'
         elif '"answerFormat":{"answer"' in user:
             text = '{"answer": "2nd floor male, 3 soap reports.", "points": ["3 reports", "soap 20%"], "basedOn": "both"}'
         else:
             text = "```json\n" + __import__("json").dumps(self.reply) + "\n```"
-        if "generativelanguage" in url:
-            return Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]})
-        if "anthropic" in url:
-            return Resp(200, {"content": [{"type": "text", "text": text}]})
-        return Resp(200, {"choices": [{"message": {"content": text}}]})
+        return text
 
 
 class InsightsBase(Base):
@@ -149,6 +158,28 @@ class Providers(InsightsBase):
                 self.svc.llm.ask("s", "u")
             self.assertIn(words, str(cm.exception))
 
+    def test_thinking_model_that_runs_out_of_room(self):
+        # Gemini thinks first; with a small limit it returned no text and the setup was thrown away.
+        self.ai.think = 2000
+        r = self.connect()
+        self.assertNotIn("warning", r)
+        self.assertTrue(self.svc.llm.configured)
+        budgets = [c["json"]["generationConfig"]["maxOutputTokens"] for c in self.ai.calls if c.get("json")]
+        self.assertEqual(budgets[:2], [1024, 16384])            # asked again with room to answer
+        latest = self.svc.insights.run_now(self.admin.actor)
+        self.assertEqual(latest["headline"], INSIGHT["headline"])
+
+    def test_busy_provider_keeps_the_key(self):
+        # Set up once: a hiccup during the test (free limit for now, slow internet) keeps the settings.
+        self.ai.status = 429
+        r = self.connect(model="gemini-3.6-flash")
+        self.assertTrue(r["warning"])
+        self.assertIn("Saved Google Gemini", r["message"])
+        self.assertTrue(self.svc.llm.configured)
+        self.assertIn("first test didn't finish", self.svc.insights_status()["lastError"])
+        self.ai.status = 200
+        self.assertEqual(self.svc.insights.run_now(self.admin.actor)["model"], "gemini-3.6-flash")
+
     def test_retired_model_switches_by_itself(self):
         # What happened on the Pi: gemini-2.5-flash was retired by Google (404).
         r = self.connect(model="gemini-2.5-flash")
@@ -196,7 +227,8 @@ class Analysis(InsightsBase):
         reports_before = self.svc.store.query(self.svc.C_REPORTS)
         latest = self.svc.insights.run_now(self.admin.actor)
 
-        prompt = json.loads(self.ai.calls[-1]["json"]["contents"][0]["parts"][0]["text"])
+        texts = [c["json"]["contents"][0]["parts"][0]["text"] for c in self.ai.calls if c.get("json")]
+        prompt = next(json.loads(t) for t in reversed(texts) if t.startswith("{") and '"records"' in t)
         self.assertIn("sensors", prompt)
         self.assertEqual(prompt["sensors"]["pages"][0]["page"], "Restroom 2F Male")
         self.assertEqual({v["name"] for v in prompt["sensors"]["pages"][0]["values"]}, {"Water level", "Smoke detected", "Temperature"})

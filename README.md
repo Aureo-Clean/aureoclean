@@ -267,6 +267,8 @@ Janitors see the top 3 suggestions as **Suggested today** on My jobs.
     no key, slow: minutes per run), Groq, OpenRouter.
 - **Retired models fix themselves:** providers retire models (Google turned off `gemini-2.5-flash` in
   October 2026). When the model is gone, AureoClean looks up the newest one, saves it and carries on.
+- **Kiosk mode:** outside websites (like AI Studio) show as a QR code to open on your phone. Setting up
+  the key from a phone (Wi-Fi website) is easiest — paste it there once.
 - **Every morning** (AI settings, default 6:00 AM) it makes fresh insights by itself; System health shows
   if that fails. One run at most every 2 minutes and 30 questions an hour, to protect the key.
 - **Privacy:** report text is sent with phone numbers and e-mails removed; reporter names, numbers and
@@ -276,6 +278,21 @@ Janitors see the top 3 suggestions as **Suggested today** on My jobs.
 - **Safety:** the AI only suggests. It never creates or changes reports and never decides or sends alerts —
   emergencies are handled by the fixed alert rules the moment a report arrives. The screens label
   everything as AI suggestions to check before acting.
+
+### AI in reporting (advice only)
+
+- **AI tip on each report:** new reports get a tip in the background (summary, likely cause, steps,
+  what to bring, about how long, safety, who else may be needed, and any repeat pattern from earlier
+  reports at the same restroom). Admins see it on the report page (**New tip** to redo it); janitors see
+  "Bring: …" on the job card. Up to 25 automatic tips a day (switch in AI settings); more on request.
+- **Say it in your own words:** in *Report a problem* and *New report*, type e.g. "baradong inidoro sa
+  2nd floor male" and **Fill in for me** picks the restroom, the problems and a clean note. The person
+  checks and sends. The AI never selects **Emergency**: if it sounds dangerous it says so, and the person
+  decides (Emergency still texts everyone by the fixed rule).
+- **Earlier here:** each report page lists earlier reports from the same restroom (worked out without AI).
+- **Written summary:** *Charts* → **Write AI summary** writes a short report for the 7/30/90 days shown
+  (what went well, what to watch, next steps); it's included in the PDF.
+- **Reports page:** the latest AI headline, linking to AI insights.
 
 ## Admin invites by email
 
@@ -394,6 +411,7 @@ backend/
   arduino.py       Arduino Cloud dashboards, values and history (API key)
   llm.py           AI providers (Gemini, Claude, OpenAI-compatible / Ollama)
   insights.py      AI insights and questions (advice only), daily run
+  report_ai.py     AI tips on reports, filling the report form, written period summaries
   analysis.py      report statistics (charts, Excel, LLM-ready data)
   sms.py           SMS senders: test mode (log) and GSM modem (AT commands)
   providers/       firebase.py (Auth + Firestore), local.py (SQLite)
