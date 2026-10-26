@@ -259,11 +259,14 @@ answers a question from the same data ("Which restroom needs attention first tod
 Janitors see the top 3 suggestions as **Suggested today** on My jobs.
 
 - **Set up once:** pick a provider and paste its key; it's tested before it's saved.
-  - **Google Gemini** — free key, no card: <https://aistudio.google.com/app/apikey> (default model
-    `gemini-2.5-flash`). Free-tier data may be used by Google to improve its products.
+  - **Google Gemini** — free key, no card: <https://aistudio.google.com/app/apikey>. Leave **Model** empty:
+    AureoClean asks Google which models the key can use and picks the newest regular Flash model.
+    Free-tier data may be used by Google to improve its products.
   - **Claude (Anthropic)** — paid key from <https://console.anthropic.com/settings/keys> (default `claude-haiku-5-5`).
   - **Other (OpenAI-compatible)** — e.g. a model on the Pi with Ollama (`http://127.0.0.1:11434/v1`,
     no key, slow: minutes per run), Groq, OpenRouter.
+- **Retired models fix themselves:** providers retire models (Google turned off `gemini-2.5-flash` in
+  October 2026). When the model is gone, AureoClean looks up the newest one, saves it and carries on.
 - **Every morning** (AI settings, default 6:00 AM) it makes fresh insights by itself; System health shows
   if that fails. One run at most every 2 minutes and 30 questions an hour, to protect the key.
 - **Privacy:** report text is sent with phone numbers and e-mails removed; reporter names, numbers and

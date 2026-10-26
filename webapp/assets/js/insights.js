@@ -18,7 +18,8 @@ function settingsForm(st, { onSaved, inline = false } = {}) {
   keyLink.addEventListener('click', (e) => { e.preventDefault(); if (info().keyUrl) openExternal(info().keyUrl); });
   const key = field('API key', { type: 'password', autocomplete: 'off',
     placeholder: st.configured && st.keyHint ? `Saved (${st.keyHint}) — leave empty to keep` : 'Paste the key here' });
-  const model = field('Model', { autocomplete: 'off', value: st.model || info().model || '' });
+  const model = field('Model', { autocomplete: 'off', value: st.model || info().model || '',
+    hint: 'Leave empty to use the newest model. If the provider retires a model, AureoClean switches by itself.' });
   const url = field('Address (Ollama on this Pi, Groq, OpenRouter …)', { autocomplete: 'off', value: st.url || '' });
   const msg = message();
   const save = h('button', { class: 'btn primary', type: 'button' }, st.configured ? 'Save & test' : 'Connect & test');
@@ -39,6 +40,9 @@ function settingsForm(st, { onSaved, inline = false } = {}) {
     key.querySelector('label').textContent = p.needsKey ? 'API key' : 'API key (leave empty for Ollama)';
     url.classList.toggle('hidden', p.id !== 'openai');
     model.querySelector('label').textContent = p.id === 'openai' ? 'Model (e.g. llama3.2:3b, qwen2.5:3b)' : 'Model';
+    model.input.placeholder = p.id === 'gemini' ? 'Automatic — newest Flash model' : p.id === 'claude' ? 'claude-haiku-5-5' : 'llama3.2:3b';
+    const hint = model.querySelector('.hint');
+    if (hint) hint.classList.toggle('hidden', p.id === 'openai');
   }
   draw();
   enterSubmits([key, model, url], save);

@@ -919,6 +919,11 @@ class AureoService:
         self.audit("ai_set_up", admin.actor, None, {"provider": provider, "model": self.llm.settings()["model"]})
         st = self.llm.public_status()
         note = "" if '"ok"' in reply.replace(" ", "") else " (it answered, but not quite as asked — results may vary)"
+        sw = getattr(self.llm, "switched", None)
+        if sw and sw[0]:
+            note += f" — “{sw[0]}” is no longer offered, so the newest model was picked"
+        elif sw:
+            note += " — picked automatically"
         return {**st, "message": f"Connected to {st['providerLabel']} · {st['model']}{note}."}
 
     def clear_llm(self, admin: Session) -> dict:

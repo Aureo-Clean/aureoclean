@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from backend.insights import clean_insight
-from backend.llm import LlmError, parse_json
+from backend.llm import LlmError, parse_json, pick_model
 from backend.service import BadRequest, Forbidden
 from tests.test_arduino import FakeArduino
 from tests.test_service import PW, Base
@@ -34,6 +34,20 @@ class Resp:
         return self._data
 
 
+GEMINI_MODELS = [   # like Google's list in late 2026: 2.5 Flash is gone
+    {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+    {"name": "models/gemini-3.8-flash-preview", "supportedGenerationMethods": ["generateContent"]},
+    {"name": "models/gemini-3.5-flash", "supportedGenerationMethods": ["generateContent"]},
+    {"name": "models/gemini-3.8-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+    {"name": "models/gemini-3.8-flash-tts", "supportedGenerationMethods": ["generateContent"]},
+    {"name": "models/gemini-3.8-live", "supportedGenerationMethods": ["bidiGenerateContent"]},
+    {"name": "models/gemini-embedding-2", "supportedGenerationMethods": ["embedContent"]},
+]
+CLAUDE_MODELS = [{"id": "claude-haiku-5-5", "created_at": "2026-05-01T00:00:00Z"},
+                 {"id": "claude-haiku-4-5", "created_at": "2025-10-01T00:00:00Z"},
+                 {"id": "claude-sonnet-5-5", "created_at": "2026-05-01T00:00:00Z"}]
+
+
 class FakeAI:
     """Answers like Gemini / Claude / an OpenAI-compatible server."""
 
@@ -41,11 +55,25 @@ class FakeAI:
         self.reply = reply if reply is not None else INSIGHT
         self.status = status
         self.calls = []
+        self.gemini_models = GEMINI_MODELS
+        self.claude_models = CLAUDE_MODELS
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        self.calls.append({"url": url, "headers": headers, "params": params, "get": True})
+        if "generativelanguage" in url:
+            return Resp(200, {"models": self.gemini_models})
+        return Resp(200, {"data": self.claude_models})
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
         if self.status != 200:
             return Resp(self.status, {"error": {"message": "nope"}})
+        if "generativelanguage" in url:
+            model = url.split("/models/")[1].split(":")[0]
+            if model not in [m["name"].removeprefix("models/") for m in self.gemini_models]:
+                return Resp(404, {"error": {"code": 404, "message": f"models/{model} is not found for API version v1beta"}})
+        if "anthropic" in url and json["model"] not in [m["id"] for m in self.claude_models]:
+            return Resp(404, {"error": {"type": "not_found_error", "message": f"model: {json['model']}"}})
         user = (json.get("contents") or [{}])[0].get("parts", [{}])[0].get("text") if "contents" in json else \
             (json["messages"][-1]["content"])
         if '{"ok": true}' in user:
@@ -74,9 +102,9 @@ class InsightsBase(Base):
 class Providers(InsightsBase):
     def test_gemini_request(self):
         r = self.connect()
-        self.assertIn("Connected to Google Gemini · gemini-2.5-flash", r["message"])
+        self.assertIn("Connected to Google Gemini · gemini-3.6-flash — picked automatically", r["message"])
         call = self.ai.calls[-1]
-        self.assertIn("/models/gemini-2.5-flash:generateContent", call["url"])
+        self.assertIn("/models/gemini-3.6-flash:generateContent", call["url"])
         self.assertEqual(call["headers"]["x-goog-api-key"], "AIzaSyTESTKEY-1234567890")
         self.assertEqual(call["json"]["generationConfig"]["responseMimeType"], "application/json")
         # The key is never shown back, and the file is private.
@@ -115,11 +143,40 @@ class Providers(InsightsBase):
 
     def test_friendly_errors(self):
         self.connect()
-        for status, words in ((429, "free limit"), (404, "model name"), (500, "error (500)")):
+        for status, words in ((429, "free limit"), (500, "error (500)")):
             self.ai.status = status
             with self.assertRaises(LlmError) as cm:
                 self.svc.llm.ask("s", "u")
             self.assertIn(words, str(cm.exception))
+
+    def test_retired_model_switches_by_itself(self):
+        # What happened on the Pi: gemini-2.5-flash was retired by Google (404).
+        r = self.connect(model="gemini-2.5-flash")
+        self.assertIn("gemini-3.6-flash", r["message"])
+        self.assertIn("“gemini-2.5-flash” is no longer offered", r["message"])
+        self.assertEqual(self.svc.llm.settings()["model"], "gemini-3.6-flash")      # saved for next time
+        # Later Google retires 3.6 too: the next run moves on without anyone touching the settings.
+        self.ai.gemini_models = [m for m in GEMINI_MODELS if "3.6" not in m["name"]]
+        latest = self.svc.insights.run_now(self.admin.actor)
+        self.assertEqual(latest["model"], "gemini-3.5-flash")
+        # Nothing usable at all: a clear message, settings untouched.
+        self.ai.gemini_models = [m for m in GEMINI_MODELS if "embedding" in m["name"]]
+        with self.assertRaises(LlmError) as cm:
+            self.svc.llm.ask("s", "u")
+        self.assertIn("doesn't offer “gemini-3.5-flash” any more", str(cm.exception))
+        self.assertEqual(self.svc.llm.settings()["model"], "gemini-3.5-flash")
+
+    def test_claude_retired_model(self):
+        r = self.connect("claude", "sk-ant-api03-test-abcdefghijkl", model="claude-haiku-3")
+        self.assertIn("claude-haiku-5-5", r["message"])
+
+    def test_pick_model(self):
+        self.assertEqual(pick_model("gemini", GEMINI_MODELS), "gemini-3.6-flash")       # stable beats preview
+        only_preview = [m for m in GEMINI_MODELS if "preview" in m["name"] or "lite" in m["name"]]
+        self.assertEqual(pick_model("gemini", only_preview), "gemini-3.8-flash-preview")
+        self.assertEqual(pick_model("gemini", [GEMINI_MODELS[3]]), "gemini-3.8-flash-lite")
+        self.assertEqual(pick_model("gemini", []), "")
+        self.assertEqual(pick_model("claude", CLAUDE_MODELS), "claude-haiku-5-5")
 
     def test_validation(self):
         with self.assertRaises(BadRequest):

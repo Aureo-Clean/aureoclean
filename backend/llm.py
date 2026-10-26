@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 import requests
 
 PROVIDERS = {
-    "gemini": {"label": "Google Gemini", "model": "gemini-2.5-flash", "needsKey": True,
+    "gemini": {"label": "Google Gemini", "model": "", "needsKey": True,      # "" = newest Flash model, found automatically
                "keyUrl": "https://aistudio.google.com/app/apikey", "note": "Free API key, no card needed."},
     "claude": {"label": "Claude (Anthropic)", "model": "claude-haiku-5-5", "needsKey": True,
                "keyUrl": "https://console.anthropic.com/settings/keys", "note": "Paid per use — needs credit on your Anthropic account."},
@@ -36,13 +36,46 @@ PROVIDERS = {
                "keyUrl": "", "note": "Ollama on the Pi, Groq, OpenRouter, OpenAI …", "url": "http://127.0.0.1:11434/v1"},
 }
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+CLAUDE_MODELS_URL = "https://api.anthropic.com/v1/models"
 CLOUD_TIMEOUT = 120
 LOCAL_TIMEOUT = 600   # a model running on the Pi itself is slow
 
 
 class LlmError(Exception):
     pass
+
+
+class ModelGone(LlmError):
+    """The provider doesn't offer this model (any more) — e.g. Google retired it."""
+
+
+_SKIP_GEMINI = re.compile(r"lite|tts|live|image|audio|embed|robotic|native|computer|exp|learnlm|thinking|vision|aqa", re.I)
+
+
+def pick_model(provider: str, models: list[dict]) -> str:
+    """The best everyday model from the provider's list: Gemini's newest regular Flash
+    (stable before preview), or Claude's newest Haiku. "" if nothing suitable."""
+    if provider == "gemini":
+        names = [m["name"].removeprefix("models/") for m in models
+                 if "generateContent" in (m.get("supportedGenerationMethods") or []) and m.get("name")]
+
+        def score(n):
+            v = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+            return ("preview" not in n, float(v.group(1)) if v else 0.0, -len(n))
+        for pool in ([n for n in names if "flash" in n and not _SKIP_GEMINI.search(n)],
+                     [n for n in names if "flash" in n and "lite" in n and not re.search(r"tts|live|image|audio", n)],
+                     [n for n in names if n.startswith("gemini") and not _SKIP_GEMINI.search(n)]):
+            if pool:
+                return max(pool, key=score)
+        return ""
+    if provider == "claude":
+        for family in ("haiku", "sonnet"):
+            pool = [m for m in models if family in str(m.get("id", ""))]
+            if pool:
+                return max(pool, key=lambda m: (str(m.get("created_at", "")), str(m["id"])))["id"]
+    return ""
 
 
 def is_local(url: str) -> bool:
@@ -94,8 +127,8 @@ class LlmClient:
     @property
     def configured(self) -> bool:
         s = self.settings()
-        if not s["provider"] or not s["model"]:
-            return False
+        if not s["provider"] or (s["provider"] == "openai" and not s["model"]):
+            return False      # Gemini/Claude can find their model by themselves
         return bool(s["apiKey"]) or not PROVIDERS[s["provider"]]["needsKey"]
 
     def public_status(self) -> dict:
@@ -118,11 +151,11 @@ class LlmClient:
             raise LlmError("Choose Gemini, Claude or Other.")
         old = self._saved()
         api_key = (api_key or "").strip() or (old.get("apiKey", "") if old.get("provider") == provider else "")
-        model = (model or "").strip() or PROVIDERS[provider]["model"]
+        model = (model or "").strip().removeprefix("models/") or PROVIDERS[provider]["model"]
         url = (url or "").strip().rstrip("/")
         if PROVIDERS[provider]["needsKey"] and len(api_key) < 12:
             raise LlmError("Paste the API key (it's long — copy all of it).")
-        if not re.fullmatch(r"[A-Za-z0-9._:/@-]{2,120}", model):
+        if (model or provider == "openai") and not re.fullmatch(r"[A-Za-z0-9._:/@-]{2,120}", model):
             raise LlmError("Type the model name, e.g. " + (PROVIDERS[provider]["model"] or "llama3.2:3b") + ".")
         if provider == "openai":
             url = url or PROVIDERS["openai"]["url"]
@@ -139,6 +172,44 @@ class LlmClient:
             os.chmod(self.file, 0o600)
         except OSError:
             pass
+
+    def _set_model(self, model: str) -> None:
+        data = self._saved()
+        if not data:          # settings from the config file: remember the model for this run only
+            os.environ["AUREOCLEAN_LLM_MODEL"] = model
+            return
+        data["model"] = model
+        self.file.write_text(json.dumps(data, indent=2))
+        try:
+            os.chmod(self.file, 0o600)
+        except OSError:
+            pass
+
+    def list_models(self) -> list[dict]:
+        """The models this key may use (Gemini / Claude)."""
+        s = self.settings()
+        try:
+            if s["provider"] == "gemini":
+                resp = self.http.get(GEMINI_MODELS_URL, headers={"x-goog-api-key": s["apiKey"]},
+                                     params={"pageSize": 1000}, timeout=30)
+                key = "models"
+            elif s["provider"] == "claude":
+                resp = self.http.get(CLAUDE_MODELS_URL, headers={"x-api-key": s["apiKey"], "anthropic-version": "2023-06-01"},
+                                     params={"limit": 100}, timeout=30)
+                key = "data"
+            else:
+                return []
+        except requests.RequestException as exc:
+            raise LlmError(f"Can't reach {PROVIDERS[s['provider']]['label']}. Check the Pi's internet.") from exc
+        if resp.status_code in (401, 403):
+            raise LlmError("The AI provider refused the API key. Check it in AI settings (or make a new key).")
+        if resp.status_code >= 400:
+            return []
+        try:
+            data = resp.json()
+        except ValueError:
+            return []
+        return [m for m in (data.get(key) or []) if isinstance(m, dict)] if isinstance(data, dict) else []
 
     def set_daily(self, daily: bool, hour: Optional[int] = None) -> None:
         data = self._saved()
@@ -164,10 +235,39 @@ class LlmClient:
         return LOCAL_TIMEOUT if s["provider"] == "openai" and is_local(s["url"]) else CLOUD_TIMEOUT
 
     def ask(self, system: str, user: str, max_tokens: int = 2500) -> str:
-        """Send one question; returns the model's text (asked to be JSON)."""
-        s = self.settings()
+        """Send one question; returns the model's text (asked to be JSON).
+
+        Providers retire models now and then. If the model is gone (or none was chosen),
+        the newest suitable one is looked up, saved, and the question is sent again."""
         if not self.configured:
             raise LlmError("The AI isn't set up yet (Reports → Insights → AI settings).")
+        self.switched: Optional[tuple[str, str]] = None
+        s = self.settings()
+        if s["provider"] == "openai":
+            return self._ask_once(system, user, max_tokens)
+        if not s["model"]:
+            self._replace_model("")
+            return self._ask_once(system, user, max_tokens)
+        try:
+            return self._ask_once(system, user, max_tokens)
+        except ModelGone:
+            self._replace_model(s["model"])
+            return self._ask_once(system, user, max_tokens)
+
+    def _replace_model(self, old: str) -> str:
+        provider = self.settings()["provider"]
+        new = pick_model(provider, self.list_models())
+        if not new or new == old:
+            who = "Google" if provider == "gemini" else "Anthropic"
+            raise LlmError((f"{who} doesn't offer “{old}” any more, and" if old else f"{who}:") +
+                           " no suitable model was found for this key. Type a model name from "
+                           + ("AI Studio" if provider == "gemini" else "the Anthropic console") + " in AI settings.")
+        self._set_model(new)
+        self.switched = (old, new)
+        return new
+
+    def _ask_once(self, system: str, user: str, max_tokens: int) -> str:
+        s = self.settings()
         provider, key, model = s["provider"], s["apiKey"], s["model"]
         try:
             if provider == "gemini":
@@ -207,17 +307,17 @@ class LlmClient:
             data = resp.json()
         except ValueError:
             data = {}
+        msg = ""
+        if status >= 400 and isinstance(data, dict):
+            err = data.get("error")
+            msg = (err.get("message") if isinstance(err, dict) else str(err or "")) or ""
         if status in (401, 403):
             raise LlmError("The AI provider refused the API key. Check it in AI settings (or make a new key).")
-        if status == 404:
-            raise LlmError("That model name wasn't found. Check the model in AI settings.")
+        if status == 404 or (status == 400 and re.search(r"not (found|supported)|no longer|deprecat|retired|unknown model|invalid model", msg, re.I)):
+            raise ModelGone("That model isn't offered any more. Check the model in AI settings.")
         if status == 429:
             raise LlmError("The AI's free limit is used up for now (too many requests). Try again later.")
         if status >= 400:
-            msg = ""
-            if isinstance(data, dict):
-                err = data.get("error")
-                msg = (err.get("message") if isinstance(err, dict) else str(err or "")) or ""
             raise LlmError(f"The AI provider answered with an error ({status}). {msg[:160]}".strip())
         try:
             if provider == "gemini":
