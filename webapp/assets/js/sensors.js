@@ -380,13 +380,14 @@ export function sensorsCard({ full = false } = {}) {
   const back = full ? h('a', { class: 'back', href: `#${home}`, 'aria-label': 'Back to Home', title: 'Back to Home' }, icon('back')) : null;
   const dot = h('span', { class: 'dot ok live' });
   const tabs = h('div', { class: 'seg pages', role: 'tablist', 'aria-label': 'Arduino dashboard pages' });
+  const boards = h('div', { class: 'seg boards hidden', role: 'tablist', 'aria-label': 'Arduino dashboards' });
   const ringFill = s('circle', { cx: 9, cy: 9, r: 7, class: 'cd', pathLength: 100 });
   const countdown = s('svg', { viewBox: '0 0 18 18', class: 'countdown', 'aria-hidden': 'true' }, s('circle', { cx: 9, cy: 9, r: 7, class: 'cdt' }), ringFill);
   const updated = h('span', { class: 'updated small muted' });
   const expand = full ? null : h('button', { class: 'btn sm ghost', type: 'button', onclick: () => go('/live'), 'aria-label': 'Open full view' },
     icon('expand'), h('span', { class: 'hide-xs' }, 'Full view'));
   const head = h('div', { class: 'shead' }, back,
-    h('div', { class: 'stitle' }, dot, h(full ? 'h1' : 'b', { class: full ? 'stitle-h' : '' }, 'Live sensors')), tabs,
+    h('div', { class: 'stitle' }, dot, h(full ? 'h1' : 'b', { class: full ? 'stitle-h' : '' }, 'Live sensors')), boards, tabs,
     h('div', { class: 'sstatus' }, countdown, updated), expand);
   const banner = h('div', { class: 'sbanner hidden', role: 'status' });
   const grid = h('div', { class: 'wgrid' });
@@ -394,7 +395,7 @@ export function sensorsCard({ full = false } = {}) {
   const foot = h('div', { class: 'sfoot' });
   const card = h('section', { class: `card sensors${full ? ' full' : ''}`, 'aria-label': 'Live sensors' }, head, body, foot);
 
-  let page = recall('aureo.sensorPage');
+  let page = recall('aureo.sensorPageId');   // the Arduino page's id
   let built = { page: null, sig: '', widgets: new Map() };
   let timer = null;
 
@@ -402,17 +403,34 @@ export function sensorsCard({ full = false } = {}) {
     grid.replaceChildren(...[1, 2, 3, 4].map(() => h('div', { class: 'widget skeleton', style: { minHeight: '96px' } })));
   }
 
+  // A page has an alarm when one of its yes/no values named like smoke, leak … is on.
+  const alarmOn = (pg) => pg.widgets.some((w) => w.values.some((v) => (v.value === true || v.value === 1) && ALERT_WORDS.test(`${w.name} ${v.name}`)));
+  const choose = (pg) => { page = pg.id; remember('aureo.sensorPageId', page); render(true); };
+
   function drawTabs(pages) {
-    const names = pages.map((p) => p.name);
-    if (!names.includes(page)) page = (pages.find((p) => p.widgets.length) || pages[0] || {}).name || null;
-    const sig = names.join('|') + '#' + page;
+    if (!pages.some((p) => p.id === page)) page = (pages.find((p) => p.widgets.length) || pages[0] || {}).id || null;
+    const current = pages.find((p) => p.id === page);
+    // Several dashboards: pick the dashboard first, then its pages.
+    const dashIds = [...new Set(pages.map((p) => p.dashboardId))];
+    const mine = current ? pages.filter((p) => p.dashboardId === current.dashboardId) : [];
+    const sig = pages.map((p) => `${p.id}=${p.name}${alarmOn(p) ? '!' : ''}`).join('|') + '#' + page;
     if (tabs._sig === sig) return;
     tabs._sig = sig;
-    tabs.classList.toggle('hidden', pages.length < 2 && !full);
-    tabs.replaceChildren(...pages.map((p) => h('button', {
-      type: 'button', role: 'tab', 'aria-selected': p.name === page ? 'true' : 'false',
-      onclick: () => { page = p.name; remember('aureo.sensorPage', page); render(true); },
-    }, p.name)));
+    boards.classList.toggle('hidden', dashIds.length < 2);
+    boards.replaceChildren(...dashIds.map((id) => {
+      const first = pages.filter((p) => p.dashboardId === id);
+      const pick = first.find((p) => p.widgets.length) || first[0];
+      return h('button', { type: 'button', role: 'tab', 'aria-selected': current && current.dashboardId === id ? 'true' : 'false',
+        onclick: () => choose(pick) }, pick.dashboard || pick.name, first.some(alarmOn) ? h('span', { class: 'tab-alarm', 'aria-label': 'alarm' }) : null);
+    }));
+    tabs.classList.toggle('hidden', mine.length < 2 && !(full && dashIds.length < 2));
+    tabs.replaceChildren(...mine.map((p) => h('button', {
+      type: 'button', role: 'tab', 'aria-selected': p.id === page ? 'true' : 'false', onclick: () => choose(p),
+    }, p.name, alarmOn(p) ? h('span', { class: 'tab-alarm', 'aria-label': 'alarm' }) : null)));
+    const on = tabs.querySelector('[aria-selected="true"]');
+    if (on && (on.offsetLeft < tabs.scrollLeft || on.offsetLeft + on.offsetWidth > tabs.scrollLeft + tabs.clientWidth)) {
+      tabs.scrollLeft = on.offsetLeft - 8;   // keep the chosen page's tab in view (many pages)
+    }
   }
 
   function drawFoot(configured) {
@@ -452,18 +470,18 @@ export function sensorsCard({ full = false } = {}) {
     const pages = d.pages || [];
     drawTabs(pages);
     drawFoot(true);
-    const current = pages.find((p) => p.name === page);
+    const current = pages.find((p) => p.id === page);
     if (!current) {
       grid.replaceChildren(h('div', { class: 'empty' }, h('b', null, 'No dashboards yet'), h('span', null, 'Make a dashboard in Arduino Cloud and it shows up here.')));
       built = { page: null, sig: '', widgets: new Map() };
       return;
     }
     const sig = current.widgets.map((w) => `${w.id}:${w.type}`).join(',');
-    if (built.page !== current.name || built.sig !== sig || pageChanged) {
-      built = { page: current.name, sig, widgets: new Map() };
+    if (built.page !== current.id || built.sig !== sig || pageChanged) {
+      built = { page: current.id, sig, widgets: new Map() };
       if (!current.widgets.length) {
-        grid.replaceChildren(h('div', { class: 'empty' }, h('b', null, `Nothing on “${current.name}” yet`),
-          h('span', null, 'Add widgets to this dashboard in Arduino Cloud — they appear here within a minute.')));
+        grid.replaceChildren(h('div', { class: 'empty' }, icon('sensors'), h('b', null, `Nothing on “${current.name}” yet`),
+          h('span', null, 'Add widgets to this page in Arduino Cloud — they show up here within a minute.')));
       } else {
         const els = current.widgets.map((w, i) => {
           const wd = makeWidget(w);

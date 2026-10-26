@@ -273,7 +273,14 @@ button.list-row:hover, a.list-row:hover { background: #F8FAFD; color: inherit; }
          background: linear-gradient(180deg, #FFFFFF, #FAFBFD); }
 .stitle { display: flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; }
 .stitle-h { font-size: 16px; font-weight: 700; margin: 0; letter-spacing: -.01em; }
-.shead .pages { flex: 0 1 auto; }
+.shead .pages, .shead .boards { flex: 0 1 auto; min-width: 0; }
+.shead .seg button { position: relative; white-space: nowrap; }
+.tab-alarm { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--red); margin-left: 6px; vertical-align: middle;
+             animation: alarm 1.2s infinite; }
+.sensors:not(.full) .shead .boards { order: 4; flex-basis: 100%; }
+.sensors.full .shead .boards { background: transparent; padding: 0; gap: 4px; flex-shrink: 0; max-width: 100%; }
+.sensors.full .shead .boards button { height: 32px; border: 1px solid var(--line-2); background: #fff; }
+.sensors.full .shead .boards button[aria-selected="true"] { border-color: var(--navy); background: var(--navy); color: #fff; }
 .sensors:not(.full) .shead .pages { order: 5; flex-basis: 100%; }
 .sensors:not(.full) .shead .pages button { height: 28px; font-size: 12px; }
 .sstatus { display: flex; align-items: center; gap: 6px; margin-left: auto; white-space: nowrap; }
@@ -385,7 +392,8 @@ button.list-row:hover, a.list-row:hover { background: #F8FAFD; color: inherit; }
   .sensors:not(.full) .chartbox { height: 86px; }
 }
 .today-line { display: flex; justify-content: space-between; font-size: 13px; }
-@media (max-width: 759px) { .home-grid { grid-template-columns: minmax(0, 1fr); flex: none; } .sensors { min-height: 0; flex-shrink: 0; }
+@media (max-width: 759px) { .sensors.full .shead .boards { order: 4; flex-basis: 100%; }
+  .home-grid { grid-template-columns: minmax(0, 1fr); flex: none; } .sensors { min-height: 0; flex-shrink: 0; }
   .sbody { flex: none; overflow: visible; } .page-head { flex-shrink: 0; }
   .wgrid, .sensors.full .wgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .live-view .sensors { flex: none; } .sensors.full .shead .pages { order: 5; flex-basis: 100%; } }

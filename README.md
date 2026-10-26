@@ -116,9 +116,11 @@ Your Arduino Cloud dashboards are shown inside the app, in AureoClean's style: o
 janitors, on the Pi and on phones over the Wi-Fi website) and full screen with **Full view**. Nobody
 signs in to Arduino: the Pi reads everything itself with an **API key**.
 
-- **Pages = your Arduino dashboards**, with the same names and in the same order (e.g. "Urinal",
-  "Page 2"). Add a dashboard or widgets in Arduino Cloud and they appear here within a minute.
-  With no dashboards yet, there's one page per thing.
+- **Tabs = your Arduino dashboard pages**, with the same names and in the same order (e.g. "Urinal",
+  "Page 2", "Page 3" …). Multi-page dashboards are read through Arduino's v3 dashboards API; add a page
+  or widgets in Arduino Cloud and they appear here within a minute (an empty page shows a short note).
+  A page with an active alarm (smoke, leak …) gets a red dot on its tab. With several dashboards, a
+  dashboard switcher sits next to the page tabs. With no dashboards yet, there's one page per thing.
 - **Widgets** follow Arduino's: gauges, percentage rings, LED/status lights, on/off, sliders as level
   bars, values with a small 6-hour trend line, charts (last 6 hours), messages and sticky notes.
   Controls are shown read-only — change values in Arduino Cloud.

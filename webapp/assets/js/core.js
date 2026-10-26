@@ -38,6 +38,14 @@ export function append(el, children) {
   return el;
 }
 
+// Put the cursor in a box once the screen is up — unless the user already tapped into something.
+export function focusSoon(el, ms = 50) {
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (el && el.isConnected && (!a || a === document.body || a === document.documentElement)) el.focus();
+  }, ms);
+}
+
 export function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -204,7 +212,7 @@ export function modal(build, { wide = false, onClose } = {}) {
   document.body.append(overlay);
   const first = box.querySelector('input, select, textarea, button.primary, button');
   // Focus the first field — unless the user already tapped into the dialog.
-  if (first) setTimeout(() => { if (!box.contains(document.activeElement)) first.focus(); }, 30);
+  if (first) setTimeout(() => { if (!box.contains(document.activeElement)) first.focus(); }, 30);  // (dialogs: focus moves inside)
   return close;
 }
 export function closeAllModals() { document.querySelectorAll('.overlay').forEach((o) => o.remove()); }

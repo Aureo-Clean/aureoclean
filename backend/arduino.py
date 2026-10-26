@@ -2,8 +2,9 @@
 
 The app shows them on Home and in the full Live sensors view, so nobody has to
 sign in to Arduino Cloud: the Pi asks Arduino for the latest value of every
-variable. Each Arduino dashboard becomes a page with the same name ("Urinal",
-"Page 2", …) and the same widgets, drawn in AureoClean's style.
+variable. Every page of your Arduino dashboards (multi-page dashboards included)
+becomes a tab with the same name ("Urinal", "Page 2", …) and the same widgets,
+drawn in AureoClean's style.
 
 Set up once in the app (Home → Live sensors → Connect Arduino Cloud) with the
 Client ID and Client Secret from https://app.arduino.cc/api-keys (Create API key).
@@ -182,53 +183,79 @@ class ArduinoCloud:
         }
 
     def _dashboards(self) -> list:
-        """Arduino dashboards with their widgets (kept for a minute)."""
+        """Arduino dashboards with their pages and widgets (kept for a minute).
+
+        The v3 API knows multi-page dashboards (each widget has a page_id); older
+        accounts/APIs without it fall back to v2 (one page per dashboard)."""
         if self._layout and time.monotonic() - self._layout[0] < LAYOUT_SECONDS:
             return self._layout[1]
-        try:
-            boards = self._get("/iot/v2/dashboards") or []
-        except ArduinoError as exc:
-            if "isn't allowed" in str(exc):
-                boards = []      # key can read things but not dashboards: show one page per thing
-            else:
-                raise
+        boards, version = None, "v3"
+        for version in ("v3", "v2"):
+            try:
+                boards = self._get(f"/iot/{version}/dashboards") or []
+                break
+            except ArduinoError as exc:
+                if "Can't reach" in str(exc) or "busy" in str(exc):
+                    raise
+                if version == "v2":
+                    if "isn't allowed" in str(exc):
+                        boards = []      # key can read things but not dashboards: one page per thing
+                        break
+                    raise
         full = []
-        for b in boards:
+        for b in boards or []:
             if not isinstance(b, dict):
                 continue
             if "widgets" not in b and b.get("id"):
-                b = self._get(f"/iot/v2/dashboards/{b['id']}") or b
+                b = self._get(f"/iot/{version}/dashboards/{b['id']}") or b
             full.append(b)
         self._layout = (time.monotonic(), full)
         return full
 
     @staticmethod
+    def _widget(w: dict, by_id: dict, by_name: dict) -> dict:
+        values = []
+        for lv in w.get("variables") or []:
+            if not isinstance(lv, dict):
+                continue
+            live = by_id.get(lv.get("id")) or by_name.get((lv.get("thing_id"), lv.get("variable_name")))
+            if live is None:   # not in the things list (e.g. shared from another account)
+                live = ArduinoCloud._value({**lv, "last_value": lv.get("last_value")},
+                                           {"id": lv.get("thing_id"), "name": lv.get("thing_name")})
+            values.append(live)
+        name = (w.get("name") or "").strip()
+        if not name or any(name == v["name"] for v in values):   # Arduino names widgets after the variable
+            name = values[0]["label"] if values else nice_name(w.get("type") or "")
+        return {
+            "id": w.get("id"), "type": re.sub(r"[^a-z]", "", (w.get("type") or "").lower()),  # "Push Button" → pushbutton
+            "name": name,
+            "x": w.get("x", 0), "y": w.get("y", 0), "w": w.get("width", 1), "h": w.get("height", 1),
+            "options": _simple_options(w.get("options")), "values": values,
+        }
+
+    @staticmethod
     def _pages(boards: list, things: list) -> list:
+        """One entry per Arduino dashboard page, in Arduino's order:
+        {"id", "name" (page name), "dashboard", "dashboardId", "icon", "widgets"}."""
         by_id = {v["id"]: v for t in things for v in t["properties"]}
         by_name = {(v["thingId"], v["name"]): v for t in things for v in t["properties"]}
         pages = []
         for b in boards:   # same order as Arduino Cloud lists them
-            widgets = []
-            for w in sorted(b.get("widgets") or [], key=lambda w: (w.get("y", 0), w.get("x", 0))):
-                values = []
-                for lv in w.get("variables") or []:
-                    if not isinstance(lv, dict):
-                        continue
-                    live = by_id.get(lv.get("id")) or by_name.get((lv.get("thing_id"), lv.get("variable_name")))
-                    if live is None:   # not in the things list (e.g. shared from another account)
-                        live = ArduinoCloud._value({**lv, "last_value": lv.get("last_value")},
-                                                   {"id": lv.get("thing_id"), "name": lv.get("thing_name")})
-                    values.append(live)
-                name = (w.get("name") or "").strip()
-                if not name or any(name == v["name"] for v in values):   # Arduino names widgets after the variable
-                    name = values[0]["label"] if values else nice_name(w.get("type") or "")
-                widgets.append({
-                    "id": w.get("id"), "type": re.sub(r"[^a-z]", "", (w.get("type") or "").lower()),  # "Push Button" → pushbutton
-                    "name": name,
-                    "x": w.get("x", 0), "y": w.get("y", 0), "w": w.get("width", 1), "h": w.get("height", 1),
-                    "options": _simple_options(w.get("options")), "values": values,
-                })
-            pages.append({"id": b.get("id"), "name": b.get("name") or "Dashboard", "widgets": widgets})
+            board_name = b.get("name") or "Dashboard"
+            widgets = sorted(b.get("widgets") or [], key=lambda w: (w.get("y", 0), w.get("x", 0)))
+            board_pages = sorted((p for p in b.get("pages") or [] if isinstance(p, dict) and p.get("id")),
+                                 key=lambda p: (p.get("position", 0), p.get("name") or ""))
+            if not board_pages:          # single-page dashboard
+                pages.append({"id": b.get("id"), "name": board_name, "dashboard": board_name, "dashboardId": b.get("id"),
+                              "icon": None, "widgets": [ArduinoCloud._widget(w, by_id, by_name) for w in widgets]})
+                continue
+            known = {p["id"] for p in board_pages}
+            first = board_pages[0]["id"]
+            for i, p in enumerate(board_pages):
+                mine = [w for w in widgets if (w.get("page_id") if w.get("page_id") in known else first) == p["id"]]
+                pages.append({"id": f"{b.get('id')}/{p['id']}", "name": p.get("name") or f"Page {i + 1}",
+                              "dashboard": board_name, "dashboardId": b.get("id"), "icon": p.get("icon"),
+                              "widgets": [ArduinoCloud._widget(w, by_id, by_name) for w in mine]})
         return pages
 
     def readings(self) -> dict:
@@ -236,7 +263,8 @@ class ArduinoCloud:
             "pages": [{"id", "name", "widgets": [{"id", "type", "name", "options", "values": [...]}]}],
             "fetchedAt"} — shared for a few seconds between screens.
 
-        "pages" are the Arduino dashboards, by name. Without any dashboard, there is one page per thing."""
+        "pages" are the pages of the Arduino dashboards (a single-page dashboard is one page named after
+        the dashboard). Without any dashboard, there is one page per thing."""
         with self._lock:
             if self._cache and time.monotonic() - self._cache[0] < CACHE_SECONDS:
                 return self._cache[1]
@@ -250,7 +278,7 @@ class ArduinoCloud:
                 })
             pages = self._pages(self._dashboards(), things)
             if not pages:
-                pages = [{"id": f"thing-{t['id']}", "name": t["name"], "fromThing": True,
+                pages = [{"id": f"thing-{t['id']}", "name": t["name"], "dashboard": "", "dashboardId": None, "fromThing": True,
                           "widgets": [{"id": v["id"], "type": "", "name": v["label"], "x": i % 4, "y": i // 4, "w": 1, "h": 1,
                                        "options": {}, "values": [v]} for i, v in enumerate(t["properties"])]}
                          for t in things if t["properties"]]

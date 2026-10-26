@@ -30,10 +30,13 @@ class FakeArduino:
         return Resp(200, {"access_token": "tok", "expires_in": 300})
 
     dashboards = None   # None = the key may not read dashboards (403)
+    dashboards_v3 = None  # None = no v3 API here (404) → the app falls back to v2
 
     def get(self, url, headers=None, params=None, timeout=None):
         self.calls.append(("get", url))
         assert headers["Authorization"] == "Bearer tok"
+        if url.endswith("/iot/v3/dashboards"):
+            return Resp(404, {}) if self.dashboards_v3 is None else Resp(200, self.dashboards_v3)
         if url.endswith("/iot/v2/dashboards"):
             return Resp(403, {}) if self.dashboards is None else Resp(200, self.dashboards)
         if url.endswith("/timeseries"):
@@ -114,6 +117,27 @@ class LiveSensors(Base):
         self.assertEqual(hist["series"], {"p1": [[1792900800, 70.0], [1792901160, 71.5]]})
         params = [c[1] for c in self.fake.calls if c[0] == "params"][0]
         self.assertEqual(params["interval"], 360)
+
+    def test_multi_page_dashboard(self):
+        def widget(wid, page, var, y):
+            return {"id": wid, "type": "Value", "page_id": page, "x": 0, "y": y, "width": 1, "height": 1, "options": {},
+                    "variables": [{"id": var, "thing_id": "t1", "variable_name": var}]}
+        self.fake.dashboards_v3 = [{"id": "d1", "name": "AureoClean", "pages": [
+            {"id": "pg3", "name": "Page 3", "position": 2},
+            {"id": "pg1", "name": "Urinal", "position": 0},
+            {"id": "pg2", "name": "Page 2", "position": 1},
+        ], "widgets": [widget("w1", "pg1", "p1", 0), widget("w2", "pg2", "p3", 0), widget("w3", "gone", "p2", 1)]}]
+        self.fake.dashboards = [{"id": "d1", "name": "AureoClean", "widgets": []}]   # v2 would hide the pages
+        r = self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")
+        self.assertIn("3 pages (Urinal, Page 2, Page 3)", r["message"])
+        pages = self.svc.sensors()["pages"]
+        self.assertEqual([(p["name"], p["dashboard"]) for p in pages],
+                         [("Urinal", "AureoClean"), ("Page 2", "AureoClean"), ("Page 3", "AureoClean")])
+        self.assertEqual([w["id"] for w in pages[0]["widgets"]], ["w1", "w3"])   # unknown page → first page
+        self.assertEqual([w["id"] for w in pages[1]["widgets"]], ["w2"])
+        self.assertEqual(pages[2]["widgets"], [])                                # new, empty page still shows
+        self.assertEqual(len({p["id"] for p in pages}), 3)
+        self.assertFalse(any("/iot/v2/dashboards" in str(c[1]) for c in self.fake.calls))
 
     def test_without_dashboards_one_page_per_thing(self):
         self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")

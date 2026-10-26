@@ -1,6 +1,6 @@
 // Signed-out screens: sign in, request janitor access, activation code, admin
 // invite, request status. Same layout on the Pi (side panel) and phones (stacked).
-import { busy, get, go, h, icon, modal, post, session, shell } from './core.js';
+import { busy, focusSoon, get, go, h, icon, modal, post, session, shell } from './core.js';
 import { enterSubmits, field, message, say } from './ui.js';
 
 const PASSWORD_MAX = 16;
@@ -84,7 +84,7 @@ export function loginView(_params, query) {
   const card = h('section', { class: 'auth-card' },
     h('div', { class: 'stack tight' }, h('h1', null, 'Welcome back'), h('p', { class: 'lead' }, 'Sign in to look after the restrooms.')),
     ident, pass, msg, submit, resend, status, exitKiosk);
-  setTimeout(() => (ident.input.value ? pass.input : ident.input).focus(), 50);
+  focusSoon(ident.input.value ? pass.input : ident.input);
   const view = authLayout(card);
   view.cleanup = () => shell.listeners.delete(syncKiosk);
   return view;
@@ -135,7 +135,7 @@ export function joinView() {
   holder.append(h('section', { class: 'auth-card wide' }, backLink(),
     h('div', { class: 'stack tight' }, h('h1', null, 'Request janitor access'), h('p', { class: 'lead' }, 'An administrator approves your request and gives you a one-time activation code.')),
     h('div', { class: 'grid2' }, name, user, email, phone), msg, submit));
-  setTimeout(() => name.input.focus(), 50);
+  focusSoon(name.input);
   const card = h('div', { class: 'wide' }, holder);
   card.classList.add('wide');
   return authLayout(card, { joins: false });
@@ -164,7 +164,7 @@ export function activateView(_p, query) {
   holder.append(h('section', { class: 'auth-card wide' }, backLink(),
     h('div', { class: 'stack tight' }, h('h1', null, 'Activate your account'), h('p', { class: 'lead' }, 'Use the code an administrator gave you. It works once.')),
     h('div', { class: 'grid2' }, user, code, pass, again), msg, submit));
-  setTimeout(() => (user.input.value ? code.input : user.input).focus(), 50);
+  focusSoon(user.input.value ? code.input : user.input);
   const card = h('div', { class: 'wide' }, holder);
   return authLayout(card, { joins: false });
 }
@@ -195,7 +195,7 @@ export function adminInviteView() {
   holder.append(h('section', { class: 'auth-card wide' }, backLink(),
     h('div', { class: 'stack tight' }, h('h1', null, 'Register as administrator'), h('p', { class: 'lead' }, 'You need an invite code from an existing administrator.')),
     code, h('div', { class: 'grid2' }, name, user, email, h('div'), pass, again), msg, submit));
-  setTimeout(() => code.input.focus(), 50);
+  focusSoon(code.input);
   return authLayout(h('div', { class: 'wide' }, holder), { joins: false });
 }
 
@@ -212,7 +212,7 @@ export function statusView() {
     } catch (err) { say(msg, err.message, 'error'); }
   }));
   enterSubmits([user, email], submit);
-  setTimeout(() => user.input.focus(), 50);
+  focusSoon(user.input);
   return authLayout(h('section', { class: 'auth-card' }, backLink(),
     h('div', { class: 'stack tight' }, h('h1', null, 'Check my request'), h('p', { class: 'lead' }, 'See whether an administrator has approved you yet.')),
     user, email, msg, submit), { joins: false });

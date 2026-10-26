@@ -105,5 +105,5 @@ export function lockNow(minutes = 0) {
     h('div', { class: 'pad' }, pad, err,
       h('button', { class: 'out', type: 'button', onclick: () => { close(); signOut(); } }, 'Sign out instead')));
   document.body.append(lockEl);
-  if (!usePin) setTimeout(() => pw.focus(), 50);
+  if (!usePin) setTimeout(() => pw.focus(), 50);  // the lock covers everything, so it always takes the focus
 }
