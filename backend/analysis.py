@@ -16,6 +16,7 @@ maintenance recommendations afterwards; it never decides whether to raise an ala
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -135,12 +136,15 @@ def summarize(records: list[dict]) -> dict:
 
 SYSTEM_PROMPT = """You are the maintenance analyst for AureoClean, an automated restroom hygiene \
 monitoring system at STI College Caloocan (Philippines). You receive restroom problem reports \
-(from QR codes, the report page and administrators) and a pre-computed summary.
+(from QR codes, the report page and administrators), a pre-computed summary, and — when connected — \
+the latest restroom sensor readings from Arduino IoT Cloud with their last-6-hour minimum, maximum, \
+average and trend.
 
 Rules:
-- Base every statement on the data given. Quote counts from the summary; do not invent numbers.
-- Emergencies were already handled by fixed alert rules when they arrived. Do not decide alerts; \
-you may point out patterns in them.
+- Base every statement on the data given. Quote counts and readings from the data; do not invent numbers.
+- Emergencies were already handled by fixed alert rules when they arrived. Do not decide alerts or \
+declare emergencies; you may point out patterns, and unusual sensor values worth checking.
+- Readings marked stale are old; say so instead of treating them as current.
 - Be concrete and practical for a small janitorial team. Plain English, short sentences.
 - Return JSON only, matching the requested format."""
 
@@ -151,24 +155,40 @@ OUTPUT_FORMAT = {
                          "priority": "high|medium|low", "reason": "..."}],
     "supplyPlan": [{"item": "soap|toilet paper|paper towels|...", "where": "...", "suggestion": "..."}],
     "facilityRepairs": [{"problem": "...", "where": "...", "suggestion": "..."}],
+    "sensorNotes": [{"finding": "what the readings show", "where": "page / sensor", "suggestion": "what to check"}],
     "dataQuality": ["anything missing or odd in the data that limits the analysis"],
 }
 
 
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
+_PHONE = re.compile(r"(?:\+?63|0)9\d{2}[\s-]?\d{3}[\s-]?\d{4}|\b\d{10,13}\b")
+
+
+def scrub(text):
+    """Hide e-mail addresses and phone numbers someone typed into a report before it leaves the Pi."""
+    if not isinstance(text, str):
+        return text
+    return _PHONE.sub("[number hidden]", _EMAIL.sub("[email hidden]", text))
+
+
 def build_prompt(records: list[dict], summary: Optional[dict] = None, question: str = "",
-                 max_records: int = 400) -> dict:
+                 max_records: int = 400, sensors: Optional[dict] = None, answer_format: Optional[dict] = None,
+                 system: Optional[str] = None) -> dict:
     """Return {"system": ..., "user": ...} ready for any chat-style LLM API."""
     summary = summary or summarize(records)
-    shown = records[-max_records:]
+    shown = [{**r, "details": scrub(r.get("details")), "notes": [scrub(n) for n in r.get("notes") or []]}
+             for r in records[-max_records:]] if max_records else []
     user = {
         "task": question or "Analyse these restroom reports and recommend what the maintenance team should do.",
         "issueCodes": {i["code"]: i["label"] for i in schema()["issues"]},
         "summary": summary,
         "records": shown,
         "recordsOmitted": max(0, len(records) - len(shown)),
-        "answerFormat": OUTPUT_FORMAT,
     }
-    return {"system": SYSTEM_PROMPT, "user": json.dumps(user, ensure_ascii=False, separators=(",", ":"))}
+    if sensors is not None:
+        user["sensors"] = sensors
+    user["answerFormat"] = answer_format or OUTPUT_FORMAT
+    return {"system": system or SYSTEM_PROMPT, "user": json.dumps(user, ensure_ascii=False, separators=(",", ":"), default=str)}
 
 
 def analyze(service, ask: Optional[Callable[[str, str], str]] = None, days: int = 30, question: str = "") -> dict:

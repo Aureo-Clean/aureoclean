@@ -230,9 +230,9 @@ from one device (6/hour) are dropped, except emergencies.
 restroom), a sign-up code, and printable A4 posters (`docs/qr/posters.html`). For a new restroom:
 `.venv/bin/python tools/make_qr.py 4F-M "4th Floor · Male"` and add it to `docs/assets/config.js`.
 
-**Ready for AI analysis:** `backend/analysis.py` turns reports into clean records (no personal data),
+**AI analysis:** `backend/analysis.py` turns reports into clean records (no personal data),
 computes patterns (by restroom, issue, hour, weekday, cleanliness, time to fix, recurring problems)
-and builds a ready-to-send prompt; `analyze(service, ask=...)` sends it to any LLM you plug in.
+and builds the prompt that **AI insights** (below) sends.
 `.venv/bin/python tools/export_reports.py` writes JSONL, CSV, summary and prompt files to `exports/`.
 
 Setup: GitHub repo → Settings → Pages → Deploy from a branch → `main` / `docs`. Then paste
@@ -248,6 +248,31 @@ saves a printable summary (on the Pi both go to ~/Documents).
 
 Janitors see open jobs as big cards. **I'll take it** and **Done** do the same as texting
 `OK 12` / `DONE 12`; whichever comes first counts, and someone else's job shows as "X is on it".
+
+## AI insights (advice only)
+
+**Reports → AI insights.** An AI model reads the last 30 days of reports and the live sensor readings
+(latest values plus each sensor's last-6-hour minimum, maximum, average and trend) and writes:
+a one-line summary, **What to do** (ranked Do first / Soon / When you can, with where, when and why),
+patterns, sensor notes, a supply plan, repairs and notes about the data. **Ask about your restrooms**
+answers a question from the same data ("Which restroom needs attention first today?"). **PDF** saves it.
+Janitors see the top 3 suggestions as **Suggested today** on My jobs.
+
+- **Set up once:** pick a provider and paste its key; it's tested before it's saved.
+  - **Google Gemini** — free key, no card: <https://aistudio.google.com/app/apikey> (default model
+    `gemini-2.5-flash`). Free-tier data may be used by Google to improve its products.
+  - **Claude (Anthropic)** — paid key from <https://console.anthropic.com/settings/keys> (default `claude-haiku-5-5`).
+  - **Other (OpenAI-compatible)** — e.g. a model on the Pi with Ollama (`http://127.0.0.1:11434/v1`,
+    no key, slow: minutes per run), Groq, OpenRouter.
+- **Every morning** (AI settings, default 6:00 AM) it makes fresh insights by itself; System health shows
+  if that fails. One run at most every 2 minutes and 30 questions an hour, to protect the key.
+- **Privacy:** report text is sent with phone numbers and e-mails removed; reporter names, numbers and
+  device IDs are never included. The key stays on the Pi (`~/.config/aureoclean/llm.json`, mode 600) or
+  in the config file (`AUREOCLEAN_LLM_PROVIDER`, `AUREOCLEAN_LLM_API_KEY`, optional `AUREOCLEAN_LLM_MODEL`,
+  `AUREOCLEAN_LLM_URL`).
+- **Safety:** the AI only suggests. It never creates or changes reports and never decides or sends alerts —
+  emergencies are handled by the fixed alert rules the moment a report arrives. The screens label
+  everything as AI suggestions to check before acting.
 
 ## Admin invites by email
 
@@ -364,10 +389,12 @@ backend/
   two_way.py       SMS replies (OK/DONE) and escalation
   health.py        System health checks
   arduino.py       Arduino Cloud dashboards, values and history (API key)
+  llm.py           AI providers (Gemini, Claude, OpenAI-compatible / Ollama)
+  insights.py      AI insights and questions (advice only), daily run
   analysis.py      report statistics (charts, Excel, LLM-ready data)
   sms.py           SMS senders: test mode (log) and GSM modem (AT commands)
   providers/       firebase.py (Auth + Firestore), local.py (SQLite)
-webapp/            the screens (HTML/CSS/JS, no build step): js/main.js, admin.js, janitor.js, sensors.js, keyboard.js, …
+webapp/            the screens (HTML/CSS/JS, no build step): js/main.js, admin.js, janitor.js, sensors.js, insights.js, keyboard.js, …
 desktop/
   shell.py         the Pi window: shows webapp/, Arduino dashboard, kiosk, downloads/PDF
   app.py, pages/   the classic Qt screens (./run_local.sh --classic)

@@ -102,6 +102,22 @@ class InviteBody(BaseModel):
     hours: Optional[int] = Field(default=None, ge=1, le=168)
 
 
+class LlmBody(BaseModel):
+    provider: str = Field(max_length=20)
+    apiKey: str = Field(default="", max_length=400)
+    model: str = Field(default="", max_length=120)
+    url: str = Field(default="", max_length=300)
+
+
+class AskBody(BaseModel):
+    question: str = Field(max_length=300)
+
+
+class DailyBody(BaseModel):
+    daily: bool
+    hour: Optional[int] = Field(default=None, ge=0, le=23)
+
+
 class ArduinoBody(BaseModel):
     clientId: str = Field(max_length=200)
     clientSecret: str = Field(max_length=300)
@@ -515,6 +531,35 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def arduino_clear(session: Session = Depends(admin)):
         return svc().clear_arduino(session)
 
+    # ------------------------------------------------ AI insights (advice only; alerts are fixed rules)
+    @app.get("/admin/insights")
+    def insights_status(_: Session = Depends(admin)):
+        return svc().insights_status()
+
+    @app.post("/admin/insights/run")
+    def insights_run(session: Session = Depends(admin)):
+        return svc().start_insights(session)
+
+    @app.post("/admin/insights/ask")
+    def insights_ask(body: AskBody, session: Session = Depends(admin)):
+        return svc().ask_insights(session, body.question)
+
+    @app.post("/admin/insights/daily")
+    def insights_daily(body: DailyBody, session: Session = Depends(admin)):
+        return svc().set_insights_daily(session, body.daily, body.hour)
+
+    @app.post("/admin/llm")
+    def llm_set(body: LlmBody, session: Session = Depends(admin)):
+        return svc().set_llm(session, body.provider, body.apiKey, body.model, body.url)
+
+    @app.post("/admin/llm/clear")
+    def llm_clear(session: Session = Depends(admin)):
+        return svc().clear_llm(session)
+
+    @app.get("/insights/today")
+    def insights_today(_: Session = Depends(any_user)):
+        return svc().insights_today()
+
     # ------------------------------------------------ reporting a problem (any role)
     @app.get("/report-options")
     def report_options(_: Session = Depends(any_user)):
@@ -594,6 +639,10 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
                     service.promo_reminder()
                 except Exception:  # noqa: BLE001
                     log.warning("SIM promo reminder failed; will retry", exc_info=True)
+                try:
+                    service.insights.tick()   # the morning AI insights, when switched on (runs in its own thread)
+                except Exception:  # noqa: BLE001
+                    log.warning("Daily insights check failed; will retry", exc_info=True)
             try:
                 n_signups, n_reports = service.run_job(
                     "web", lambda: (service.import_web_signups(), service.import_public_reports()))

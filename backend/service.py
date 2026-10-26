@@ -61,6 +61,8 @@ from .security import (
 )
 from .two_way import alert_text
 from .arduino import ArduinoCloud, ArduinoError
+from .insights import Insights
+from .llm import LlmClient, LlmError
 from .mailer import Mailer, MailError
 from .sms import (
     LogSender,
@@ -325,6 +327,8 @@ class AureoService:
         self.sim_promo = SimPromo(settings.sms_settings_file.with_name("sim_promo.json"))
         self.mailer = Mailer(settings.sms_settings_file.with_name("mail.json"))
         self.arduino = ArduinoCloud(settings.sms_settings_file.with_name("arduino.json"))
+        self.llm = LlmClient(settings.sms_settings_file.with_name("llm.json"))
+        self.insights = Insights(self)
         self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
         self.store = store
         self.identity = identity
@@ -895,6 +899,52 @@ class AureoService:
         shown = ", ".join(names[:4]) + ("…" if len(names) > 4 else "")
         pages = f"{len(names)} page{'s' if len(names) != 1 else ''} ({shown})" if names else "no dashboards yet"
         return {"configured": True, "message": f"Connected: {pages}, {count} sensor value{'s' if count != 1 else ''}."}
+
+    # ------------------------------------------------------------------ AI insights (advice only)
+    def insights_status(self) -> dict:
+        return self.insights.status()
+
+    def set_llm(self, admin: Session, provider: str, api_key: str = "", model: str = "", url: str = "") -> dict:
+        """Save the AI settings, then check them with a tiny question; the old settings stay if it fails."""
+        old = self.llm.file.read_text() if self.llm.file.exists() else None
+        try:
+            self.llm.save(provider, api_key, model, url)
+            reply = self.llm.ask("Reply with JSON only.", 'Reply exactly with {"ok": true}', max_tokens=50)
+        except LlmError as exc:
+            if old is None:
+                self.llm.clear()
+            else:
+                self.llm.file.write_text(old)
+            raise BadRequest(str(exc))
+        self.audit("ai_set_up", admin.actor, None, {"provider": provider, "model": self.llm.settings()["model"]})
+        st = self.llm.public_status()
+        note = "" if '"ok"' in reply.replace(" ", "") else " (it answered, but not quite as asked — results may vary)"
+        return {**st, "message": f"Connected to {st['providerLabel']} · {st['model']}{note}."}
+
+    def clear_llm(self, admin: Session) -> dict:
+        self.llm.clear()
+        self.audit("ai_removed", admin.actor, None)
+        return self.llm.public_status()
+
+    def set_insights_daily(self, admin: Session, daily: bool, hour: Optional[int] = None) -> dict:
+        self.llm.set_daily(daily, hour)
+        self.audit("insights_daily", admin.actor, None, {"daily": daily, "hour": hour})
+        return self.llm.public_status()
+
+    def start_insights(self, admin: Session) -> dict:
+        try:
+            return self.insights.start(admin.actor)
+        except LlmError as exc:
+            raise BadRequest(str(exc))
+
+    def ask_insights(self, admin: Session, question: str) -> dict:
+        try:
+            return self.insights.ask(admin.actor, question)
+        except LlmError as exc:
+            raise BadRequest(str(exc))
+
+    def insights_today(self) -> dict:
+        return self.insights.today()
 
     def clear_arduino(self, admin: Session) -> dict:
         self.arduino.clear()

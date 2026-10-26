@@ -1,5 +1,6 @@
 // Janitor screens: My jobs (the simple report view), Report a problem, Live sensors.
 import { ago, busy, cached, firstName, get, h, icon, peek, post, session, toast, invalidate } from './core.js';
+import { tipsCard } from './insights.js';
 import { sensorsCard } from './sensors.js';
 import { empty, errorBox, message, pageHead, priorityChip, say, segmented } from './ui.js';
 
@@ -13,6 +14,7 @@ export function jobsView(_p, query) {
   }, { large: true, label: 'Which jobs' });
   const view = h('div', { class: 'stack enter' },
     h('header', { class: 'page-head' }, h('div', null, h('h1', null, `Hi ${firstName(session.user)}`), summary), h('div', { class: 'grow' }), seg),
+    tipsCard(),
     grid,
     h('p', { class: 'small muted', style: { marginTop: 'auto' } }, 'Same as texting back OK and DONE with the number — whichever you do first counts.'));
 

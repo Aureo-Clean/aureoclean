@@ -118,6 +118,7 @@ export function reportsView(_p, query) {
 
   const view = h('div', { class: 'stack enter' },
     pageHead('Reports',
+      h('a', { class: 'btn sm', href: '#/insights' }, icon('sparkle'), 'AI insights'),
       h('a', { class: 'btn sm', href: '#/charts' }, icon('chart'), 'Charts'),
       h('button', { class: 'btn primary sm', type: 'button', onclick: () => newReportDialog(() => view.refresh(true)) }, icon('plus'), 'New report')),
     h('div', { class: 'row wrap' }, seg, h('div', { class: 'grow' }), h('div', { class: 'hide-phone', style: { display: 'contents' } }, find)),

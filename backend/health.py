@@ -143,6 +143,20 @@ class HealthMonitor:
                 out.append(_check(f"job_{key}", name, "warn", f"Last checked {int(age // 60)} min ago."))
             else:
                 out.append(_check(f"job_{key}", name, "ok", f"Checked {int(age)} s ago."))
+        llm = getattr(self.svc, "llm", None)
+        if llm is not None and llm.configured:   # AI insights: advice only, so at most a warning
+            st = self.svc.job_status.get("insights")
+            last = self.svc.insights.latest() or {}
+            if st and st.get("error"):
+                out.append(_check("job_insights", "AI insights", "warn", f"Last try failed: {st['error'][:140]}"))
+            elif last.get("createdAt"):
+                age = (utcnow() - parse_iso(last["createdAt"])).total_seconds()
+                stale = llm.settings()["daily"] and age > 30 * 3600
+                when = f"{int(age // 3600)} h ago" if age >= 3600 else f"{int(age // 60)} min ago"
+                out.append(_check("job_insights", "AI insights", "warn" if stale else "ok",
+                                  f"Last made {when}." + (" The daily run hasn't happened — check AI settings." if stale else "")))
+            else:
+                out.append(_check("job_insights", "AI insights", "off", "Set up; no insights made yet."))
         return out
 
     def pi(self):

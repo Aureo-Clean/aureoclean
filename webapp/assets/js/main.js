@@ -9,6 +9,7 @@ import {
 } from './core.js';
 import { jobsView, reportProblemView, sensorsView } from './janitor.js';
 import { initLock, isLocked, lockNow } from './lock.js';
+import { insightsView } from './insights.js';
 import { initKeyboard } from './keyboard.js';
 import { liveView } from './sensors.js';
 
@@ -23,6 +24,7 @@ route('/home', homeView);
 route('/reports', reportsView);
 route('/reports/:id', reportDetailView);
 route('/charts', chartsView);
+route('/insights', insightsView);
 route('/people', peopleView);
 route('/system', systemView);
 route('/account', accountView);
@@ -34,7 +36,7 @@ route('/live', liveView);
 const ADMIN_NAV = [
   { path: '/home', label: 'Home', icon: 'home', tab: 'Home', also: ['/live'] },
   { group: 'Operations' },
-  { path: '/reports', label: 'Reports', icon: 'reports', badge: 'reports', also: ['/charts'], tab: 'Reports' },
+  { path: '/reports', label: 'Reports', icon: 'reports', badge: 'reports', also: ['/charts', '/insights'], tab: 'Reports' },
   { group: 'People' },
   { path: '/people', label: 'People', icon: 'people', badge: 'people', tab: 'People' },
   { group: 'System' },
@@ -130,7 +132,7 @@ async function render() {
   if (signedIn && (PUBLIC.has(pathname) || pathname === '/')) { go(home, { replace: true }); return; }
   const match = matchRoute(path);
   if (!match) { go(home, { replace: true }); return; }
-  if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/people', '/system'].some((p) => pathname.startsWith(p))) {
+  if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/insights', '/people', '/system'].some((p) => pathname.startsWith(p))) {
     go('/sensors', { replace: true }); return;
   }
   if (signedIn && session.user.role === 'admin' && ['/jobs', '/report', '/sensors'].includes(pathname)) { go('/home', { replace: true }); return; }

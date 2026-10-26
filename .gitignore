@@ -13,3 +13,4 @@ exports/
 .updating
 arduino.json
 mail.json
+llm.json
