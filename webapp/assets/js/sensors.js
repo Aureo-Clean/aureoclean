@@ -596,7 +596,8 @@ function openDetail(w) {
       ...rules.map((a) => {
         const [word, color] = STATE[a.state] || STATE.ok;
         return h('div', { class: `alert-line ${a.state}` }, icon('bell'), h('div', { class: 'grow' }, h('b', null, a.text),
-          h('div', { class: 'small muted' }, { emergency: 'Emergency · texts everyone', urgent: 'Urgent · texts the janitors', report: 'Report only' }[a.level])),
+          h('div', { class: 'small muted' }, { emergency: 'Emergency · texts everyone', urgent: 'Urgent · texts the janitors', report: 'Report only' }[a.level]),
+          a.why ? h('div', { class: 'small' }, a.why) : null),
         h('span', { class: `chip ${color}` }, word + (a.ref ? ` #${a.ref}` : '')),
         admin ? h('button', { class: 'btn sm', type: 'button', onclick: () => edit(a) }, 'Edit') : null);
       }),

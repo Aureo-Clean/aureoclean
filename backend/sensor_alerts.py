@@ -20,6 +20,7 @@ Rules are kept on the Pi in ~/.config/aureoclean/sensor_alerts.json.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -31,10 +32,12 @@ from typing import Callable, Optional
 
 from .security import generate_id, iso, utcnow
 
+log = logging.getLogger("aureoclean.sensor_alerts")
+
 CHECK_SECONDS = 15
 CLEAR_SECONDS = 120          # back to normal this long → "back to normal" note
 AFTER_DONE_SECONDS = 30 * 60  # a job marked done while still over the limit: wait before a new report
-STALE_SECONDS = 60 * 60      # a reading older than this (device off?) is ignored
+STALE_SECONDS = 3 * 60 * 60  # a reading older than this (device off?) is ignored
 MAX_RULES = 60
 MAX_REPORTS_PER_HOUR = 12    # sensor reports per hour (emergencies always get through)
 
@@ -127,6 +130,17 @@ def _age_seconds(updated: Optional[str], now: float) -> Optional[float]:
         return None
 
 
+def _age_text(seconds: float) -> str:
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min"
+    if s < 172800:
+        return f"{s // 3600} h {s % 3600 // 60} min" if s % 3600 >= 60 and s < 36000 else f"{s // 3600} h"
+    return f"{s // 86400} days"
+
+
 def suggest(v: dict, history: Optional[list] = None) -> dict:
     """A sensible first limit for a variable, from what it measures. Admins adjust it after
     watching the chart. history: recent [[time, value], …] (used for the BME680 gas reading)."""
@@ -185,6 +199,8 @@ class SensorAlerts:
         self._thread: Optional[threading.Thread] = None
         self.last_check: Optional[float] = None
         self.last_error: Optional[str] = None
+        self.why: dict[str, str] = {}        # rule id → why it did / didn't alert (shown to admins)
+        self._tested: dict[str, float] = {}
 
     # ------------------------------------------------------------------ settings file
     def _load(self) -> dict:
@@ -295,9 +311,16 @@ class SensorAlerts:
             st = saved["state"].get(r["id"]) or {}
             out.append({**r, "text": self.describe(r), "levelText": LEVELS[r["level"]]["about"],
                         "state": self._state_word(r, st), "since": st.get("since"),
-                        "active": st.get("active"), "lastValue": st.get("lastValue")})
+                        "active": st.get("active"), "lastValue": st.get("lastValue"),
+                        "why": self.why.get(r["id"]) or ("Switched off." if not r.get("on") else "Not checked yet.")})
         return {"rules": out, "levels": [{"code": k, "label": v["label"], "about": v["about"]} for k, v in LEVELS.items()],
-                "lastCheck": self.last_check, "error": self.last_error}
+                "checker": self.checker()}
+
+    def checker(self) -> dict:
+        """Is the background check running? {"running", "ago" (seconds since the last check), "error"}"""
+        alive = bool(self._thread and self._thread.is_alive())
+        ago = None if self.last_check is None else max(0, round(self.clock() - self.last_check))
+        return {"running": alive, "ago": ago, "error": self.last_error, "every": CHECK_SECONDS}
 
     @staticmethod
     def _state_word(rule: dict, st: dict) -> str:
@@ -319,7 +342,7 @@ class SensorAlerts:
             st = saved["state"].get(r["id"]) or {}
             out.setdefault(r["propertyId"], []).append({
                 "id": r["id"], "op": r["op"], "limit": r["limit"], "level": r["level"], "text": self.describe(r),
-                "state": self._state_word(r, st), "ref": (st.get("active") or {}).get("ref")})
+                "state": self._state_word(r, st), "ref": (st.get("active") or {}).get("ref"), "why": self.why.get(r["id"], "")})
         return out
 
     # ------------------------------------------------------------------ checking
@@ -332,11 +355,12 @@ class SensorAlerts:
                 time.sleep(CHECK_SECONDS)
                 try:
                     self.svc.run_job("sensor_alerts", self.check)
-                except Exception:  # noqa: BLE001 - logged in job_status; try again next round
-                    pass
+                except Exception:  # noqa: BLE001 - shown in System health; try again next round
+                    log.warning("Sensor alert check failed; will retry", exc_info=True)
 
         self._thread = threading.Thread(target=loop, daemon=True, name="sensor-alerts")
         self._thread.start()
+        log.info("Sensor alerts: checking %d alert(s) every %d s", len(self.rules()), CHECK_SECONDS)
 
     @staticmethod
     def _breach(rule: dict, value) -> Optional[bool]:
@@ -364,25 +388,32 @@ class SensorAlerts:
             saved = self._load()
             rules = [r for r in saved["rules"] if r.get("on")]
             if not rules or not self.svc.arduino.configured:
-                self.last_check, self.last_error = self.clock(), None
+                self.last_check = self.clock()
+                self.last_error = None if self.svc.arduino.configured else "Arduino Cloud isn't connected."
                 return 0
             try:
                 data = self.svc.arduino.readings()
             except Exception as exc:
-                self.last_error = str(exc)
+                self.last_error = f"Can't read the sensors: {exc}"
                 raise
             values = {(v["thingId"], v["id"]): v for t in data.get("things", []) for v in t["properties"]}
             now = self.clock()
             made = 0
             changed = False
+            errors = []
             for rule in rules:
                 st = saved["state"].setdefault(rule["id"], {})
                 before = json.dumps(st, sort_keys=True)
-                made += self._check_rule(rule, st, values.get((rule["thingId"], rule["propertyId"])), now)
+                try:
+                    made += self._check_rule(rule, st, values.get((rule["thingId"], rule["propertyId"])), now)
+                except Exception as exc:  # noqa: BLE001 - one broken alert must not stop the others
+                    log.exception("Sensor alert %s failed", rule["id"])
+                    self.why[rule["id"]] = f"Error while checking: {exc}"[:200]
+                    errors.append(f"{rule['label']}: {exc}")
                 changed = changed or json.dumps(st, sort_keys=True) != before
             if changed or made:
                 self._save(saved)
-            self.last_check, self.last_error = now, None
+            self.last_check, self.last_error = now, ("; ".join(errors)[:300] or None)
             return made
 
     def _report_status(self, report_id: str) -> Optional[str]:
@@ -390,20 +421,28 @@ class SensorAlerts:
         return r.get("status") if r else None
 
     def _check_rule(self, rule: dict, st: dict, v: Optional[dict], now: float) -> int:
+        rid, unit = rule["id"], rule.get("unit", "")
         if v is None:
+            self.why[rid] = "This value isn't on Arduino Cloud any more (renamed or deleted?). Make the alert again."
             return 0
         age = _age_seconds(v.get("updatedAt"), now)
         if age is not None and age > STALE_SECONDS:
-            return 0          # no fresh reading (device off?): don't alert on an old value, don't clear either
+            # No fresh reading (device off?): don't alert on an old value, don't clear either.
+            self.why[rid] = (f"Not checked: the last reading is {_age_text(age)} old. Is the device on and online? "
+                             f"Alerts only use readings from the last {STALE_SECONDS // 3600} hours.")
+            return 0
         value = v.get("value")
         breach = self._breach(rule, value)
         if breach is None:
+            self.why[rid] = "No reading yet." if value is None else f"Can't compare “{str(value)[:20]}” with the limit."
             return 0
+        now_text = show(value, unit)
         st["lastValue"] = value
         active = st.get("active")
         if active:
             status = self._report_status(active["reportId"])
             if status != "resolved" and status is not None:
+                self.why[rid] = f"Alert sent: report #{active.get('ref')} is still open (now {now_text})."
                 if breach:
                     st.pop("clearSince", None)
                     worse = (value > active.get("peak", value)) if rule["op"] == "above" else (value < active.get("peak", value)) if rule["op"] == "below" else False
@@ -428,9 +467,16 @@ class SensorAlerts:
         if not breach:
             if self._back_to_normal(rule, value):
                 st.pop("since", None)
+            self.why[rid] = f"Normal: now {now_text}."
             return 0
         st["since"] = st.get("since") or now
-        if now - st["since"] < rule.get("minutes", 0) * 60 or now < (st.get("quietUntil") or 0):
+        held, need = now - st["since"], rule.get("minutes", 0) * 60
+        if held < need:
+            self.why[rid] = f"Over the limit (now {now_text}) for {_age_text(held)} — a report after {rule['minutes']} min."
+            return 0
+        if now < (st.get("quietUntil") or 0):
+            left = st["quietUntil"] - now
+            self.why[rid] = f"Over the limit (now {now_text}), but the last report was just marked done: waiting {_age_text(left)} more."
             return 0
         # Over the limit long enough.
         reopen = st.get("openReport")
@@ -438,6 +484,7 @@ class SensorAlerts:
             ref = (self.svc.store.get(self.svc.C_REPORTS, reopen) or {}).get("smsRef")
             self._note(reopen, f"Over the limit again: {rule['label']} {show(value, rule.get('unit', ''))}.")
             st["active"] = {"reportId": reopen, "ref": ref, "at": iso(utcnow()), "peak": value}
+            self.why[rid] = f"Over the limit again: added to the open report #{ref}."
             return 0
         st.pop("openReport", None)
         if rule["level"] != "emergency" and self._recent_sensor_reports() >= MAX_REPORTS_PER_HOUR:
@@ -445,12 +492,35 @@ class SensorAlerts:
                 st["throttled"] = True
                 self.svc.audit("sensor_alert_held", {"type": "system", "username": "sensors"}, rule["id"],
                                {"reason": "too many sensor reports this hour", "rule": self.describe(rule)})
+            self.why[rid] = f"Held back: already {MAX_REPORTS_PER_HOUR} sensor reports in the last hour."
             return 0
         st.pop("throttled", None)
         report = self._make_report(rule, v, value, now - st["since"])
         st["active"] = {"reportId": report["id"], "ref": report["smsRef"], "at": report["createdAt"], "peak": value}
         st.pop("quietUntil", None)
+        self.why[rid] = f"Alert sent: report #{report['smsRef']} (now {now_text})."
+        log.info("Sensor alert: %s → report #%s", report["title"], report["smsRef"])
         return 1
+
+    def send_test(self, rule_id: str, by: str) -> dict:
+        """Make a report and send the texts now, as if the limit was crossed — to check the whole chain."""
+        rule = next((r for r in self.rules() if r["id"] == rule_id), None)
+        if rule is None:
+            raise SensorAlertError("That alert was deleted.")
+        if self.clock() - self._tested.get(rule_id, 0) < 60:
+            raise SensorAlertError("A test was just sent. Wait a minute before the next one.")
+        self._tested[rule_id] = self.clock()
+        v, value = {}, None
+        try:
+            data = self.svc.arduino.readings()
+            v = next((x for t in data["things"] for x in t["properties"]
+                      if x["thingId"] == rule["thingId"] and x["id"] == rule["propertyId"]), {}) or {}
+            value = v.get("value")
+        except Exception:  # noqa: BLE001 - a test works without a reading too
+            pass
+        if value is None or self._breach(rule, value) is None:
+            value = rule["limit"] if rule["op"] in ("above", "below") else (rule["op"] == "on")
+        return self._make_report(rule, v, value, 0, test_by=by)
 
     def _recent_sensor_reports(self) -> int:
         hour_ago = iso(datetime.fromtimestamp(self.clock() - 3600, timezone.utc))
@@ -462,7 +532,7 @@ class SensorAlerts:
         except Exception:  # noqa: BLE001 - the report may have been deleted
             pass
 
-    def _make_report(self, rule: dict, v: dict, value, held: float) -> dict:
+    def _make_report(self, rule: dict, v: dict, value, held: float, test_by: str = "") -> dict:
         from .two_way import alert_text
 
         unit = rule.get("unit") or v.get("unit") or ""
@@ -479,6 +549,9 @@ class SensorAlerts:
         details = "Sensor alert" + (f" ({limit}" + (f", for {mins} min" if mins >= 1 else "") + ")" if limit else "") + "."
         if rule.get("thing"):
             details += f" From {rule['thing']}."
+        if test_by:
+            title = f"TEST {title}"
+            details = f"Test alert sent by {test_by} — nothing is wrong. " + details
         category = "emergency" if rule["level"] == "emergency" else CATEGORY.get(kind, "other")
         issues = ["emergency"] if rule["level"] == "emergency" else ISSUES.get(kind, [])
         report = self.svc._save_report(
@@ -489,13 +562,18 @@ class SensorAlerts:
                    "locationCode": rule.get("locationCode"),
                    "sensor": {"ruleId": rule["id"], "thingId": rule["thingId"], "propertyId": rule["propertyId"],
                               "label": rule["label"], "variable": rule.get("variable", ""), "value": value,
-                              "unit": unit, "op": rule["op"], "limit": rule["limit"], "rule": self.describe(rule)}})
+                              "unit": unit, "op": rule["op"], "limit": rule["limit"], "rule": self.describe(rule),
+                              **({"test": True} if test_by else {})}})
         self.svc.audit("sensor_alert", {"type": "system", "username": "sensors"}, report["id"],
                        {"rule": self.describe(rule), "value": str(value)[:30], "level": rule["level"]})
         if level["notify"] != "none":
             from .service import ROLE_JANITOR
             recipients = self.svc.sms_recipients(None if level["notify"] == "everyone" else ROLE_JANITOR)
-            text = alert_text(level["sms"], report["smsRef"], report["title"], report["location"],
+            text = alert_text(("TEST " if test_by else "") + level["sms"], report["smsRef"], report["title"].removeprefix("TEST "),
+                              report["location"],
                               limit[:1].upper() + limit[1:] if limit else "")
             self.svc._notify_async(report["id"], recipients, text)
+            report["texted"] = len(recipients)
+        else:
+            report["texted"] = 0
         return report

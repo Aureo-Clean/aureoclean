@@ -158,7 +158,7 @@ class SensorAlerts(Base):
         self.cloud.values["temp"] = 40
         self.svc.arduino._cache = None
         self.svc.arduino.readings()               # cached with the current time…
-        self.clock.t += 2 * 3600                   # …then the device goes quiet for 2 hours
+        self.clock.t += 4 * 3600                   # …then the device goes quiet for 4 hours
         self.assertEqual(self.svc.sensor_alerts.check(), 0)
 
     def test_switched_off_and_deleted_rules_do_nothing(self):
@@ -190,3 +190,40 @@ class SensorAlerts(Base):
         self.assertEqual(kind_of("ammoniaPpm"), "ammonia")
         self.assertEqual(show(52000.0, "Ω"), "52,000 Ω")
         self.assertEqual(show(3.14159), "3.14")
+
+    def test_says_why_it_has_not_alerted(self):
+        rule = self.rule(minutes=5)
+        why = lambda: next(r for r in self.svc.sensor_alerts_overview()["rules"] if r["id"] == rule["id"])["why"]  # noqa: E731
+        self.assertEqual(why(), "Not checked yet.")
+        self.tick(temp=30)
+        self.assertEqual(why(), "Normal: now 30 °C.")
+        self.tick(temp=36)
+        self.tick(60, temp=36)
+        self.assertEqual(why(), "Over the limit (now 36 °C) for 1 min — a report after 5 min.")
+        self.tick(300, temp=36)
+        self.assertRegex(why(), r"^Alert sent: report #\d+ \(now 36 °C\)\.$")
+        # A device that stopped sending: old readings are ignored, and the list says so.
+        self.svc.arduino._cache = None
+        self.svc.arduino.readings()
+        self.clock.t += 4 * 3600
+        self.svc.sensor_alerts.check()
+        self.assertIn("the last reading is 4 h old", why())
+        self.assertEqual(self.svc.sensor_alerts_overview()["checker"]["error"], None)
+
+    def test_test_button_makes_a_report_and_texts(self):
+        rule = self.rule(minutes=10)
+        r = self.svc.test_sensor_alert(self.admin, rule["id"])
+        self.assertIn("Test report #", r["message"])
+        self.assertIn("Texting 1 people", r["message"])
+        rep = self.sensor_reports()[0]
+        self.assertTrue(rep["title"].startswith("TEST Temperature too high"))
+        self.assertTrue(rep["sensor"]["test"])
+        self.assertIn("nothing is wrong", rep["details"])
+        self.assertTrue(self.sms.sent[0][1].startswith(f"AureoClean TEST SENSOR ALERT #{rep['smsRef']}: Temperature too high"), self.sms.sent[0][1])
+        with self.assertRaises(BadRequest):   # one test a minute
+            self.svc.test_sensor_alert(self.admin, rule["id"])
+        # The test doesn't change the alert itself.
+        self.assertEqual(self.tick(temp=30), 0)
+        self.svc.sms = type("Log", (), {"mode": "log", "send": lambda s, to, text: None})()
+        self.clock.t += 61
+        self.assertIn("TEST MODE", self.svc.test_sensor_alert(self.admin, rule["id"])["message"])

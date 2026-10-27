@@ -1090,7 +1090,33 @@ class AureoService:
             raise BadRequest(str(exc))
         self.audit("sensor_alert_saved", admin.actor, rule["id"], {"rule": self.sensor_alerts.describe(rule),
                                                                    "level": rule["level"], "on": rule["on"]})
+        if not getattr(self, "sync_notifications", False):   # check at once, so "right away" really is
+            threading.Thread(target=lambda: self._check_sensor_alerts_quietly(), daemon=True, name="sensor-check").start()
         return {"rule": rule, "message": f"Alert saved: {self.sensor_alerts.describe(rule)}."}
+
+    def _check_sensor_alerts_quietly(self) -> None:
+        try:
+            self.run_job("sensor_alerts", self.sensor_alerts.check)
+        except Exception:  # noqa: BLE001 - shown in the alert list and System health
+            pass
+
+    def test_sensor_alert(self, admin: Session, rule_id: str) -> dict:
+        """A TEST report and texts for one alert, to check reports and SMS end to end."""
+        try:
+            report = self.sensor_alerts.send_test(rule_id, admin.username)
+        except SensorAlertError as exc:
+            raise BadRequest(str(exc))
+        self.audit("sensor_alert_tested", admin.actor, report["id"], {"title": report["title"]})
+        n = report.get("texted", 0)
+        if n == 0:
+            texts = ("No text: this alert is “Report only”." if report["priority"] == "normal" else
+                     "Nobody was texted: no one has SMS alerts on with a verified number (My profile → SMS alerts).")
+        elif self.sms.mode != "modem":
+            texts = f"SMS is in TEST MODE, so the {n} text(s) were only written to the log — System → SMS → Find & use modem."
+        else:
+            texts = f"Texting {n} people now."
+        return {"id": report["id"], "ref": report["smsRef"], "texted": n,
+                "message": f"Test report #{report['smsRef']} made. {texts}"}
 
     def delete_sensor_alert(self, admin: Session, rule_id: str) -> dict:
         try:

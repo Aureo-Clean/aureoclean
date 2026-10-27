@@ -179,11 +179,14 @@ watch it for a day and adjust. The Pi checks every 15 seconds, even with no scre
   — janitors reply **OK 14 / DONE 14** as usual.
 * While the report is open, going over the limit again only adds a note. Back to normal for 2 minutes →
   a "Back to normal" note (the janitor still marks it done). Marked done but still over → a new report after 30 minutes.
-* Readings older than 1 hour (device off?) never trigger or clear an alert. At most 12 sensor reports an hour
+* Readings older than 3 hours (device off?) never trigger or clear an alert. At most 12 sensor reports an hour
   (emergencies always go through). Tiles over a limit turn amber, red with the report number once the alert went out.
 * Rules are kept on the Pi in `~/.config/aureoclean/sensor_alerts.json`; changes are in the audit log.
   **System → Health** shows "Sensor alerts" (and fails if Arduino Cloud can't be read).
 * Texts need the GSM modem (not test mode) and janitors with a verified number (*My profile → SMS alerts*).
+* **Sensor alerts** shows, for every alert, *why* it has or hasn't fired yet ("Normal: now 31 °C",
+  "Over the limit for 1 min — a report after 5 min", "the last reading is 4 h old…"), and whether the checker is
+  running. **Test** makes a report marked TEST and sends the texts now, to check reports and SMS end to end.
 
 ## SMS alerts
 

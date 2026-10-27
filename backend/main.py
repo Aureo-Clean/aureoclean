@@ -612,6 +612,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def sensor_alert_save(body: SensorAlertBody, session: Session = Depends(admin)):
         return svc().save_sensor_alert(session, body.model_dump())
 
+    @app.post("/admin/sensor-alerts/{rule_id}/test")
+    def sensor_alert_test(rule_id: str, session: Session = Depends(admin)):
+        return svc().test_sensor_alert(session, rule_id[:40])
+
     @app.post("/admin/sensor-alerts/{rule_id}/delete")
     def sensor_alert_delete(rule_id: str, session: Session = Depends(admin)):
         return svc().delete_sensor_alert(session, rule_id[:40])

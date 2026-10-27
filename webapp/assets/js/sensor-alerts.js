@@ -93,6 +93,8 @@ export async function alertEditor(v, existing = null, after = () => {}) {
       } catch (err) { say(msg, err.message, 'error'); }
     }));
     const del = existing ? h('button', { class: 'btn danger left', type: 'button' }, 'Delete') : null;
+    const test = existing ? h('button', { class: 'btn ghost', type: 'button', title: 'Make a TEST report and texts now' }, 'Send test alert') : null;
+    if (test) test.addEventListener('click', () => testAlert({ ...existing, text: existing.text || v.label }, test));
     if (del) {
       del.addEventListener('click', async () => {
         if (!(await confirmBox('Delete this alert?', 'The sensor stays on the dashboard; it just won\'t make reports or texts any more.', { ok: 'Delete', danger: true }))) return;
@@ -114,9 +116,31 @@ export async function alertEditor(v, existing = null, after = () => {}) {
       h('div', { class: 'row', style: { gap: '10px' } }, onSwitch, h('div', { class: 'grow' }, h('b', { class: 'small' }, 'Alert is on'),
         h('div', { class: 'small muted' }, 'Checked every 15 seconds on the Pi, even when nobody has the app open.'))),
       msg,
-      h('div', { class: 'actions' }, del, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel'), save),
+      existing && existing.why ? h('div', { class: 'small muted' }, h('b', null, 'Now: '), existing.why) : null,
+      h('div', { class: 'actions' }, del, test, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel'), save),
     ];
   }, { wide: true });
+}
+
+/** Send a TEST report and texts for one alert (checks reports + SMS end to end). */
+export async function testAlert(rule, btn) {
+  const go = async () => {
+    try { const r = await post(`/admin/sensor-alerts/${encodeURIComponent(rule.id)}/test`, {}, { timeout: 30000 }); toast(r.message, 'success'); }
+    catch (err) { toast(err.message, 'error'); }
+  };
+  if (!(await confirmBox('Send a test alert?', `This makes a report marked TEST for “${rule.text}” and texts people the same way a real alert would ` +
+    `(${rule.level === 'report' ? 'no text for Report only' : rule.level === 'emergency' ? 'everyone' : 'the janitors'}).`, { ok: 'Send test' }))) return;
+  if (btn) await busy(btn, 'Sending…', go); else await go();
+}
+
+function checkerLine(c) {
+  if (!c) return null;
+  if (c.error) return h('div', { class: 'msg error', style: { display: 'block' } }, h('b', null, 'Alerts aren\'t working right now. '), c.error);
+  if (!c.running) return h('div', { class: 'msg error', style: { display: 'block' } }, h('b', null, 'The alert checker isn\'t running. '),
+    'Close AureoClean and open it again (or run Update AureoClean).');
+  if (c.ago === null || c.ago === undefined) return h('div', { class: 'small muted' }, 'Starting… the first check runs within a few seconds.');
+  if (c.ago > c.every * 6) return h('div', { class: 'msg warn', style: { display: 'block' } }, `Last checked ${Math.round(c.ago / 60)} min ago — the checker seems stuck. Restart AureoClean.`);
+  return h('div', { class: 'small muted checker' }, h('span', { class: 'dot ok live' }), ` Checking every ${c.every} s · last check ${c.ago} s ago`);
 }
 
 /** Every alert, with its state, from the Live sensors view (admins). */
@@ -124,35 +148,40 @@ export function alertsDialog(data, after = () => {}) {
   const values = [];
   for (const t of (data && data.things) || []) for (const v of t.properties) if (canAlert(v)) values.push(v);
   const byId = new Map(values.map((v) => [v.id, v]));
+  let timer = null;
   modal((close) => {
     const list = h('div', { class: 'list alert-list' }, h('div', { class: 'small muted', style: { padding: '12px' } }, 'Loading…'));
+    const status = h('div');
     const reopen = () => { after(); alertsDialog(data, after); };
     async function load() {
       try {
         const r = await get('/admin/sensor-alerts');
+        status.replaceChildren(...[r.rules.some((x) => x.on) ? checkerLine(r.checker) : null].filter(Boolean));
         if (!r.rules.length) {
           list.replaceChildren(h('div', { class: 'empty' }, icon('bell'), h('b', null, 'No sensor alerts yet'),
             h('span', null, 'Add one below, or tap a value on the dashboard and choose Set an alert.')));
           return;
         }
+        if (list.contains(document.activeElement)) return;   // don't redraw under the finger
         list.replaceChildren(...r.rules.map((rule) => {
           const v = byId.get(rule.propertyId);
           const [stateText, color] = STATE[rule.state] || STATE.ok;
           const sw = switchEl(rule.on, async (on, b) => {
-            try { await post('/admin/sensor-alerts', { ...rule, on, limit: rule.limit }); toast(on ? 'Alert on.' : 'Alert off.'); after(); }
+            try { await post('/admin/sensor-alerts', { ...rule, on, limit: rule.limit }); toast(on ? 'Alert on.' : 'Alert off.'); after(); load(); }
             catch (err) { b.set(!on); toast(err.message, 'error'); }
           }, `${rule.text}: on or off`);
           const edit = h('button', { class: 'btn sm', type: 'button', disabled: !v }, 'Edit');
           edit.addEventListener('click', () => { close(); alertEditor(v, rule, reopen); });
-          const now = rule.lastValue !== undefined && rule.lastValue !== null ? ` · now ${show(rule.lastValue, rule.unit)}` : '';
+          const test = h('button', { class: 'btn sm ghost', type: 'button' }, 'Test');
+          test.addEventListener('click', () => testAlert(rule, test).then(load));
           return h('div', { class: 'list-row' },
             h('span', { class: `dot ${rule.state === 'alert' ? 'fail' : rule.state === 'over' ? 'warn' : rule.on ? 'ok' : 'off'}` }),
             h('div', { class: 'grow' },
               h('div', { class: 'row-title' }, rule.text),
               h('div', { class: 'row-sub' }, [rule.location || 'No restroom set', rule.levelText].join(' · ')),
-              h('div', { class: 'row-sub' }, h('span', { class: `chip ${color}` }, stateText + (rule.active && rule.active.ref ? ` #${rule.active.ref}` : '')),
-                v ? now : ' · this value is gone from Arduino Cloud')),
-            sw, edit);
+              h('div', { class: 'row-why' }, h('span', { class: `chip ${color}` }, stateText + (rule.active && rule.active.ref ? ` #${rule.active.ref}` : '')),
+                ' ', rule.why)),
+            h('div', { class: 'alert-btns' }, sw, h('div', { class: 'row', style: { gap: '4px' } }, test, edit)));
         }));
       } catch (err) { list.replaceChildren(h('div', { class: 'msg error', style: { margin: '12px' } }, err.message)); }
     }
@@ -164,13 +193,15 @@ export function alertsDialog(data, after = () => {}) {
       close(); alertEditor(v, null, reopen);
     });
     load();
+    timer = setInterval(() => { if (document.visibilityState === 'visible') load(); }, 5000);
     return [
       h('div', { class: 'detail-head' }, h('div', null, h('h2', null, 'Sensor alerts'),
         h('div', { class: 'small muted' }, 'When a value crosses its limit, the Pi makes a report and texts people — fixed rules, no AI.')),
       h('button', { class: 'btn ghost icon', type: 'button', 'aria-label': 'Close', onclick: () => close() }, icon('x'))),
+      status,
       h('div', { class: 'card flush' }, list),
       values.length ? h('div', { class: 'row wrap', style: { gap: '8px', alignItems: 'flex-end' } }, h('div', { class: 'grow' }, pick), add)
         : h('p', { class: 'small muted' }, 'No number or on/off values on Arduino Cloud yet.'),
     ];
-  }, { wide: true });
+  }, { wide: true, onClose: () => clearInterval(timer) });
 }
