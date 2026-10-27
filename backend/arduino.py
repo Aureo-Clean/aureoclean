@@ -83,6 +83,7 @@ class ArduinoCloud:
         self._history: Optional[tuple[float, dict]] = None
         self._lock = threading.Lock()
         self._history_lock = threading.Lock()
+        self._series_cache: dict = {}
 
     # ------------------------------------------------------------------ settings
     def _saved(self) -> dict:
@@ -98,6 +99,7 @@ class ArduinoCloud:
             "clientId": saved.get("clientId") or os.environ.get("AUREOCLEAN_ARDUINO_CLIENT_ID", "").strip(),
             "clientSecret": saved.get("clientSecret") or os.environ.get("AUREOCLEAN_ARDUINO_CLIENT_SECRET", "").strip(),
             "org": saved.get("org") or os.environ.get("AUREOCLEAN_ARDUINO_ORG", "").strip(),
+            "janitorsControl": bool(saved.get("janitorsControl", False)),
         }
 
     @property
@@ -110,12 +112,24 @@ class ArduinoCloud:
         if len(client_id) < 8 or len(client_secret) < 8:
             raise ArduinoError("Paste both the Client ID and the Client Secret from Arduino Cloud → API keys.")
         self.file.parent.mkdir(parents=True, exist_ok=True)
-        self.file.write_text(json.dumps({"clientId": client_id, "clientSecret": client_secret, "org": org}, indent=2))
+        keep = {"janitorsControl": bool(self._saved().get("janitorsControl", False))}
+        self.file.write_text(json.dumps({"clientId": client_id, "clientSecret": client_secret, "org": org, **keep}, indent=2))
         try:
             os.chmod(self.file, 0o600)
         except OSError:
             pass
         self._token, self._cache, self._layout, self._history = None, None, None, None
+
+    def set_options(self, janitors_control: bool) -> None:
+        data = self._saved()
+        if not data:
+            raise ArduinoError("Connect Arduino Cloud in the app first.")
+        data["janitorsControl"] = bool(janitors_control)
+        self.file.write_text(json.dumps(data, indent=2))
+        try:
+            os.chmod(self.file, 0o600)
+        except OSError:
+            pass
 
     def clear(self) -> None:
         try:
@@ -169,6 +183,56 @@ class ArduinoCloud:
         if not resp.ok:
             raise ArduinoError(f"Arduino Cloud error ({resp.status_code}).")
         return resp.json()
+
+    def publish(self, thing_id: str, prop_id: str, value) -> None:
+        """Send a new value to a variable (a switch, slider … on the dashboard)."""
+        path = f"/iot/v2/things/{thing_id}/properties/{prop_id}/publish"
+        try:
+            resp = self.http.put(f"{API}{path}", headers=self._headers(), json={"value": value}, timeout=15)
+        except requests.RequestException as exc:
+            raise ArduinoError("Can't reach Arduino Cloud. Check the Pi's internet.") from exc
+        if resp.status_code == 401:
+            self._token = None
+            raise ArduinoError("Arduino Cloud refused the API key. Check it under Live sensors → Arduino settings.")
+        if resp.status_code == 403:
+            raise ArduinoError("This API key isn't allowed to change that value.")
+        if resp.status_code == 429:
+            raise ArduinoError("Arduino Cloud is busy (too many requests). Try again in a moment.")
+        if resp.status_code >= 400:
+            raise ArduinoError(f"Arduino Cloud didn't accept the value ({resp.status_code}).")
+        # Show the new value at once on every screen (the device confirms it on the next reading).
+        with self._lock:
+            if self._cache:
+                for t in self._cache[1]["things"]:
+                    for v in t["properties"]:
+                        if v["id"] == prop_id and t["id"] == thing_id:
+                            v["value"] = value
+                            v["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        with self._history_lock:
+            self._history = None if self._history and prop_id in self._history[1].get("series", {}) else self._history
+
+    def series(self, thing_id: str, prop_id: str, hours: int) -> list:
+        """One variable's values for the last 1/6/24 hours (the detail chart), [[unix time, value], …]."""
+        hours = hours if hours in (1, 6, 24, 72) else 6
+        key = (thing_id, prop_id, hours)
+        hit = self._series_cache.get(key)
+        if hit and time.monotonic() - hit[0] < 60:
+            return hit[1]
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        raw = self._get(f"/iot/v2/things/{thing_id}/properties/{prop_id}/timeseries", {
+            "from": (now - timedelta(hours=hours)).isoformat().replace("+00:00", "Z"),
+            "to": now.isoformat().replace("+00:00", "Z"), "interval": max(30, int(hours * 3600 / 120))}) or {}
+        points = []
+        for d in raw.get("data") or []:
+            try:
+                points.append([round(datetime.fromisoformat(str(d["time"]).replace("Z", "+00:00")).timestamp()), float(d["value"])])
+            except (KeyError, TypeError, ValueError):
+                continue
+        points.sort()
+        if len(self._series_cache) > 50:
+            self._series_cache.clear()
+        self._series_cache[key] = (time.monotonic(), points)
+        return points
 
     @staticmethod
     def _value(p: dict, thing: dict) -> dict:

@@ -4,7 +4,7 @@
 // API key, so nobody signs in to Arduino. Values update in place every few seconds with
 // gentle animations; small charts show the last few hours.
 import { ago, busy, get, go, h, icon, modal, openExternal, post, session, shell, toast } from './core.js';
-import { field, message, say } from './ui.js';
+import { field, message, say, switchEl } from './ui.js';
 
 const REFRESH_MS = 5000;
 const HISTORY_MS = 180000;
@@ -16,7 +16,7 @@ const CSS_D = !!(window.CSS && CSS.supports && CSS.supports('d', 'path("M0 0")')
 let uid = 0;
 
 // Shared between the Home card and the full view, so switching is instant.
-const store = { data: null, series: {}, historyAt: 0, error: '', at: 0 };
+const store = { data: null, series: {}, historyAt: 0, error: '', at: 0, pending: {} };
 
 function s(tag, attrs = {}, ...children) {
   const el = document.createElementNS(SVG_NS, tag);
@@ -128,6 +128,41 @@ function bump(el) {
   el.classList.remove('changed'); void el.offsetWidth; el.classList.add('changed');
 }
 
+// ------------------------------------------------------------------ controls (switches, sliders …)
+// A change shows at once; it's kept for a few seconds so the next refresh doesn't snap it back
+// before the device confirms. If Arduino refuses, it springs back with the reason.
+const HOLD_MS = 8000;
+const BOOL_TYPES = /^(BOOL|STATUS|HOME_SWITCH)$/i;
+function isBool(v) { return typeof v.value === 'boolean' || BOOL_TYPES.test(v.type || ''); }
+function isText(v) { return typeof v.value === 'string' || /STRING/i.test(v.type || ''); }
+function canChange(v) {
+  return !!(v && v.writable && store.data && store.data.canControl && (isBool(v) || isNum(v.value) || isText(v) || v.value == null));
+}
+function withPending(v) {
+  const p = store.pending[v.id];
+  if (!p) return v;
+  if (Date.now() > p.until || (p.sent && v.value === p.value)) { delete store.pending[v.id]; return v; }
+  return { ...v, value: p.value, pending: !p.sent };
+}
+function notify() { listeners.forEach((fn) => fn()); }
+async function sendValue(v, value, name = '') {
+  const prev = v.value;
+  store.pending[v.id] = { value, until: Date.now() + HOLD_MS, sent: false };
+  notify();
+  try {
+    const r = await post('/sensors/control', { thingId: v.thingId, propertyId: v.id, value }, { timeout: 20000 });
+    store.pending[v.id] = { value: r.value, until: Date.now() + HOLD_MS, sent: true };
+    for (const t of (store.data && store.data.things) || []) for (const x of t.properties) if (x.id === v.id) x.value = r.value;
+    toast(name ? `${name} → ${r.shown}` : r.message, 'success');
+  } catch (err) {
+    delete store.pending[v.id];
+    for (const t of (store.data && store.data.things) || []) for (const x of t.properties) if (x.id === v.id) x.value = prev;
+    toast(err.message, 'error');
+  }
+  notify();
+}
+const noBubble = (e) => e.stopPropagation();   // a control's tap doesn't open the details
+
 function frame(w, kind, ...content) {
   const title = h('div', { class: 'wname', title: w.name }, w.name);
   const foot = h('div', { class: 'wwhen' });
@@ -140,11 +175,14 @@ function makeValue(w) {
   const unit = h('span', { class: 'wunit' });
   const tr = h('span', { class: 'wtrend' });
   const spark = sparkline();
-  const f = frame(w, 'value', h('div', { class: 'wvalue' }, num, unit), h('div', { class: 'wmeta' }, tr), spark.el);
+  const change = h('button', { class: 'wchange hidden', type: 'button' }, 'Change…');
+  const f = frame(w, 'value', h('div', { class: 'wvalue' }, num, unit), h('div', { class: 'wmeta' }, tr, change), spark.el);
+  change.addEventListener('click', (e) => { noBubble(e); openDetail(f.el._w || w); });
   return {
     el: f.el,
     update(w2) {
       const v = w2.values[0] || {};
+      change.classList.toggle('hidden', !canChange(v));
       if (num._v !== undefined && num._v !== v.value) bump(f.el);
       tween(num, isNum(v.value) ? v.value : null);
       unit.textContent = v.unit || '';
@@ -170,12 +208,42 @@ function sparkline({ height = 34, axis = false } = {}) {
       s('stop', { offset: '100%', 'stop-color': 'currentColor', 'stop-opacity': '0' }))),
     area, line, dot);
   const lo = h('span'); const hi = h('span');
-  const el = axis ? h('div', { class: 'chartbox' }, svg, h('div', { class: 'yaxis' }, hi, lo)) : h('div', { class: 'sparkbox' }, svg);
+  const guide = h('div', { class: 'sguide hidden' });
+  const mark = h('div', { class: 'smark hidden' });
+  const tip = h('div', { class: 'stip hidden' });
+  const el = axis ? h('div', { class: 'chartbox' }, svg, guide, mark, tip, h('div', { class: 'yaxis' }, hi, lo)) : h('div', { class: 'sparkbox' }, svg);
+  let last = null; let hideTimer = null;
+  if (axis) {
+    // Touch or move along the chart to read the value at that time.
+    const scrub = (e) => {
+      if (!last || last.series.length < 2) return;
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      let i = 0; let best = Infinity;
+      last.pts.forEach((p, k) => { const d = Math.abs(p[0] / 300 - fx); if (d < best) { best = d; i = k; } });
+      const [t, v] = last.series[i];
+      const x = (last.pts[i][0] / 300) * rect.width; const y = (last.pts[i][1] / height) * rect.height;
+      guide.style.left = `${x}px`; mark.style.left = `${x}px`; mark.style.top = `${y}px`;
+      const d = new Date(t * 1000);
+      const same = d.toDateString() === new Date().toDateString();
+      tip.textContent = `${fmt(v, decimalsFor(Math.abs(v) < 10 ? Math.round(v * 100) / 100 : Math.round(v)))}${last.unit ? ` ${last.unit}` : ''} · ${
+        d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}${same ? '' : `, ${d.toLocaleDateString(undefined, { weekday: 'short' })}`}`;
+      tip.style.left = `${Math.max(4, Math.min(rect.width - tip.offsetWidth - 4, x - tip.offsetWidth / 2))}px`;
+      [guide, mark, tip].forEach((n) => n.classList.remove('hidden'));
+      clearTimeout(hideTimer);
+    };
+    const hide = () => { clearTimeout(hideTimer); hideTimer = setTimeout(() => [guide, mark, tip].forEach((n) => n.classList.add('hidden')), 1400); };
+    el.addEventListener('pointerdown', (e) => { noBubble(e); scrub(e); });
+    el.addEventListener('pointermove', scrub);
+    el.addEventListener('pointerleave', hide);
+    el.addEventListener('pointerup', hide);
+    el.addEventListener('click', noBubble);
+  }
   return {
     el,
-    draw(series) {
+    draw(series, unit = '') {
       el.classList.toggle('empty', series.length < 2);
-      if (series.length < 2) return;
+      if (series.length < 2) { last = null; return; }
       const vals = series.map((p) => p[1]);
       let min = Math.min(...vals); let max = Math.max(...vals);
       if (max - min < 1e-9) { min -= 1; max += 1; }
@@ -186,8 +254,9 @@ function sparkline({ height = 34, axis = false } = {}) {
       const d = linePath(pts);
       setPath(line, d);
       setPath(area, `${d} L300 ${height} L0 ${height} Z`);
-      const last = pts[pts.length - 1];
-      dot.setAttribute('cx', last[0]); dot.setAttribute('cy', last[1]);
+      last = { series, pts, unit };
+      const end = pts[pts.length - 1];
+      dot.setAttribute('cx', end[0]); dot.setAttribute('cy', end[1]);
       const dd = decimalsFor(max - min < 10 ? 0.1 : 1);
       hi.textContent = fmt(max - pad, dd); lo.textContent = fmt(min + pad, dd);
     },
@@ -208,7 +277,7 @@ function makeChart(w) {
       tween(num, isNum(v.value) ? v.value : null);
       unit.textContent = v.unit || '';
       const series = seriesFor(v);
-      chart.draw(series);
+      chart.draw(series, v.unit || '');
       span.firstChild.textContent = series.length > 1 ? ago(new Date(series[0][0] * 1000).toISOString()) : '';
       f.foot.textContent = series.length > 1 ? whenText(v) : 'Collecting history…';
     },
@@ -273,7 +342,17 @@ function makeRing(w) {
 function makeState(w) {
   const light = h('span', { class: 'light' });
   const word = h('span', { class: 'sword' });
-  const f = frame(w, 'state', h('div', { class: 'state' }, light, word));
+  const momentary = /button/.test(w.type || '') && !/switch/.test(w.type || '');
+  const toggle = h('button', { class: 'wswitch hidden', type: 'button', role: 'switch', 'aria-label': `${w.name}: on or off` }, h('i'));
+  const hold = h('button', { class: 'whold hidden', type: 'button' }, 'Press');
+  let cur = null;
+  toggle.addEventListener('click', (e) => { noBubble(e); if (cur) sendValue(cur.v, !cur.on, cur.name); });
+  let down = false;
+  hold.addEventListener('pointerdown', (e) => { noBubble(e); e.preventDefault(); if (!cur || down) return; down = true; hold.classList.add('down'); sendValue(cur.v, true, cur.name); });
+  const release = (e) => { noBubble(e); if (!down) return; down = false; hold.classList.remove('down'); sendValue(cur.v, false, cur.name); };
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => hold.addEventListener(ev, release));
+  hold.addEventListener('click', noBubble);
+  const f = frame(w, 'state', h('div', { class: 'state' }, light, word, h('div', { class: 'grow' }), toggle), hold);
   return {
     el: f.el,
     update(w2) {
@@ -283,13 +362,27 @@ function makeState(w) {
       const text = v.value === null || v.value === undefined ? '—' : on ? (alertish ? 'Yes' : 'On') : (alertish ? 'No' : 'Off');
       if (word.textContent && word.textContent !== text) bump(f.el);
       word.textContent = text;
+      cur = { v, on, name: w2.name };
+      const ctl = canChange(v) && isBool(v);
+      toggle.classList.toggle('hidden', !ctl || momentary);
+      hold.classList.toggle('hidden', !ctl || !momentary);
+      toggle.setAttribute('aria-checked', String(on));
+      toggle.classList.toggle('busy', !!v.pending);
+      f.el.classList.toggle('controllable', ctl);
       f.el.classList.toggle('on', on && !alertish);
       f.el.classList.toggle('alert', on && alertish);
       f.el.classList.toggle('calm', !on && alertish);
-      f.foot.textContent = whenText(v);
+      f.foot.textContent = ctl ? (momentary ? 'Hold to press · ' : 'Tap the switch · ') + whenText(v) : whenText(v);
       f.el.classList.toggle('stale', !!isStale(v));
     },
   };
+}
+
+function rangeOf(w, v) {
+  const min = isNum(w.options.min) ? w.options.min : 0;
+  const max = isNum(w.options.max) && w.options.max > min ? w.options.max : Math.max(100, isNum(v.value) ? Math.ceil(v.value) : 100);
+  const step = isNum(w.options.step) && w.options.step > 0 ? w.options.step : (Number.isInteger(min) && Number.isInteger(max) && max - min >= 10 ? 1 : (max - min) / 100);
+  return { min, max, step };
 }
 
 function makeLevel(w) {
@@ -297,20 +390,49 @@ function makeLevel(w) {
   const unit = h('span', { class: 'wunit' });
   const fill = h('div', { class: 'lfill' });
   const lo = h('span'); const hi = h('span');
-  const f = frame(w, 'level', h('div', { class: 'wvalue' }, num, unit), h('div', { class: 'level' }, fill), h('div', { class: 'grange' }, lo, hi));
+  const stepper = /stepper/.test(w.type || '');
+  const range = h('input', { class: 'wrange hidden', type: 'range', 'aria-label': w.name });
+  const minus = h('button', { class: 'wstep hidden', type: 'button', 'aria-label': 'Less' }, '−');
+  const plus = h('button', { class: 'wstep hidden', type: 'button', 'aria-label': 'More' }, '+');
+  let cur = null; let dragging = false; let stepTimer = null; let local = null;
+  const show = (val, r) => {
+    num.textContent = fmt(val, decimalsFor(r.step < 1 ? r.step : val)); num._v = val;
+    fill.style.transform = `scaleX(${Math.max(0, Math.min(1, (val - r.min) / (r.max - r.min)))})`;
+  };
+  ['pointerdown', 'click', 'keydown'].forEach((ev) => [range, minus, plus].forEach((b) => b.addEventListener(ev, noBubble)));
+  range.addEventListener('input', () => { dragging = true; show(Number(range.value), cur.r); });
+  range.addEventListener('change', () => { dragging = false; sendValue(cur.v, Number(range.value), cur.name); });
+  const nudge = (dir) => {
+    const r = cur.r;
+    local = Math.max(r.min, Math.min(r.max, +((local ?? cur.v.value ?? r.min) + dir * r.step).toFixed(6)));
+    show(local, r);
+    clearTimeout(stepTimer);
+    stepTimer = setTimeout(() => { const val = local; local = null; sendValue(cur.v, val, cur.name); }, 700);
+  };
+  minus.addEventListener('click', () => nudge(-1));
+  plus.addEventListener('click', () => nudge(1));
+  const f = frame(w, 'level', h('div', { class: 'wvalue' }, minus, num, unit, plus), h('div', { class: 'level' }, fill), range, h('div', { class: 'grange' }, lo, hi));
   return {
     el: f.el,
     update(w2) {
       const v = w2.values[0] || {};
-      const min = isNum(w2.options.min) ? w2.options.min : 0;
-      const max = isNum(w2.options.max) && w2.options.max > min ? w2.options.max : 100;
-      const frac = isNum(v.value) ? Math.max(0, Math.min(1, (v.value - min) / (max - min))) : 0;
-      if (num._v !== undefined && num._v !== v.value) bump(f.el);
-      tween(num, isNum(v.value) ? v.value : null);
+      const r = rangeOf(w2, v);
+      cur = { v, r, name: w2.name };
+      const ctl = canChange(v) && !isBool(v) && !isText(v);
+      range.classList.toggle('hidden', !ctl || stepper);
+      minus.classList.toggle('hidden', !ctl || !stepper);
+      plus.classList.toggle('hidden', !ctl || !stepper);
+      f.el.classList.toggle('controllable', ctl);
+      range.min = r.min; range.max = r.max; range.step = r.step;
+      if (!dragging && local === null) {
+        if (isNum(v.value)) range.value = v.value;
+        if (num._v !== undefined && num._v !== v.value) bump(f.el);
+        tween(num, isNum(v.value) ? v.value : null);
+        fill.style.transform = `scaleX(${isNum(v.value) ? Math.max(0, Math.min(1, (v.value - r.min) / (r.max - r.min))) : 0})`;
+      }
       unit.textContent = v.unit || '';
-      fill.style.transform = `scaleX(${frac})`;
-      lo.textContent = fmt(min, decimalsFor(min)); hi.textContent = fmt(max, decimalsFor(max));
-      f.foot.textContent = whenText(v);
+      lo.textContent = fmt(r.min, decimalsFor(r.min)); hi.textContent = fmt(r.max, decimalsFor(r.max));
+      f.foot.textContent = ctl ? (stepper ? 'Tap − / + · ' : 'Drag to change · ') + whenText(v) : whenText(v);
       f.el.classList.toggle('stale', !!isStale(v));
     },
   };
@@ -318,11 +440,14 @@ function makeLevel(w) {
 
 function makeText(w, kind) {
   const body = h('div', { class: 'wtext' });
-  const f = frame(w, kind, body);
+  const change = h('button', { class: 'wchange hidden', type: 'button' }, kind === 'message' ? 'Send a message…' : 'Change…');
+  const f = frame(w, kind, body, change);
+  change.addEventListener('click', (e) => { noBubble(e); openDetail(f.el._w || w); });
   return {
     el: f.el,
     update(w2) {
       const v = w2.values[0] || {};
+      change.classList.toggle('hidden', !(canChange(v) && isText(v)) || kind === 'note' || kind === 'other');
       let text;
       if (kind === 'note') text = w2.options.text || w2.options.content || w2.name;
       else if (kind === 'map' && v.value && typeof v.value === 'object') text = `${fmt(v.value.lat, 5)}, ${fmt(v.value.lon, 5)}`;
@@ -343,7 +468,121 @@ function makeWidget(w) {
   if (kind === 'chart' || (kind === 'note' && (w.w || 1) >= 3)) wd.el.classList.add('wide');
   if (kind === 'gauge') wd.el.classList.add('tall');
   wd.kind = kind;
+  if (kind !== 'note' && kind !== 'other' && w.values.length) {
+    wd.el.setAttribute('tabindex', '0');
+    wd.el.setAttribute('role', 'button');
+    wd.el.setAttribute('aria-label', `${w.name}: details`);
+    wd.el.addEventListener('click', () => openDetail(wd.el._w || w));
+    wd.el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(wd.el._w || w); } });
+  }
+  const update = wd.update;
+  wd.update = (w2) => { wd.el._w = w2; update(w2); };
   return wd;
+}
+
+// ------------------------------------------------------------------ details (tap a tile)
+function currentValue(id) {
+  for (const t of (store.data && store.data.things) || []) for (const v of t.properties) if (v.id === id) return withPending(v);
+  return null;
+}
+
+function controlFor(w, v, after) {
+  if (!canChange(v)) return null;
+  if (isBool(v)) {
+    const momentary = /button/.test(w.type || '') && !/switch/.test(w.type || '');
+    if (momentary) {
+      const b = h('button', { class: 'btn primary lg block', type: 'button' }, 'Hold to press');
+      let down = false;
+      b.addEventListener('pointerdown', (e) => { e.preventDefault(); down = true; sendValue(v, true, w.name); });
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => b.addEventListener(ev, () => { if (down) { down = false; sendValue(v, false, w.name); } }));
+      return b;
+    }
+    const on = v.value === true;
+    const b = h('button', { class: `btn lg block ${on ? '' : 'primary'}`, type: 'button' }, on ? 'Turn off' : 'Turn on');
+    b.addEventListener('click', () => sendValue(v, !on, w.name).then(after));
+    return b;
+  }
+  if (isText(v)) {
+    const input = h('input', { class: 'input', type: 'text', maxlength: 256, placeholder: 'Type a message', 'aria-label': 'New value' });
+    const b = h('button', { class: 'btn primary', type: 'button' }, 'Send');
+    const go2 = () => { if (input.value.trim()) { sendValue(v, input.value, w.name).then(after); input.value = ''; } };
+    b.addEventListener('click', go2);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go2(); });
+    return h('div', { class: 'row', style: { gap: '8px' } }, input, b);
+  }
+  const r = rangeOf(w, v);
+  const input = h('input', { class: 'input num', type: 'number', inputmode: 'decimal', step: 'any', min: r.min, max: r.max, value: isNum(v.value) ? v.value : '', 'aria-label': 'New value', style: { width: '120px' } });
+  const range = h('input', { class: 'wrange', type: 'range', min: r.min, max: r.max, step: r.step, value: isNum(v.value) ? v.value : r.min, 'aria-label': w.name });
+  range.addEventListener('input', () => { input.value = range.value; });
+  input.addEventListener('input', () => { range.value = input.value; });
+  const b = h('button', { class: 'btn primary', type: 'button' }, 'Set');
+  const go2 = () => { const n = Number(input.value); if (input.value !== '' && Number.isFinite(n)) sendValue(v, n, w.name).then(after); };
+  b.addEventListener('click', go2);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go2(); });
+  return h('div', { class: 'stack tight' }, range, h('div', { class: 'row', style: { gap: '8px' } }, input, h('span', { class: 'muted' }, v.unit || ''), h('div', { class: 'grow' }), b));
+}
+
+function openDetail(w) {
+  const first = w.values[0];
+  if (!first) return;
+  let hours = 6;
+  const big = h('span', { class: 'wnum num' });
+  const unit = h('span', { class: 'wunit' });
+  const updated = h('span', { class: 'small muted' });
+  const ctlSlot = h('div', { class: 'detail-ctl' });
+  const chart = sparkline({ height: 150, axis: true });
+  const xFrom = h('span');
+  const stats = h('div', { class: 'detail-stats' });
+  const note = h('div', { class: 'small muted' });
+  const seg = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Time range' }, [[1, '1 h'], [6, '6 h'], [24, '24 h']].map(([n, label]) =>
+    h('button', { type: 'button', role: 'tab', 'aria-selected': String(n === hours), onclick: (e) => {
+      hours = n; seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-selected', String(b === e.currentTarget))); loadSeries();
+    } }, label)));
+  const numeric = !isText(first) && (isNum(first.value) || isBool(first) || first.value == null);
+
+  function drawValue() {
+    const v = currentValue(first.id) || first;
+    if (isBool(v)) { big.textContent = v.value == null ? '—' : v.value ? 'On' : 'Off'; big._v = undefined; unit.textContent = ''; }
+    else if (isNum(v.value)) { tween(big, v.value); unit.textContent = v.unit || ''; }
+    else { big.textContent = v.value == null ? '—' : String(typeof v.value === 'object' ? JSON.stringify(v.value) : v.value).slice(0, 120); unit.textContent = ''; }
+    updated.textContent = `${v.pending ? 'Sending… · ' : ''}${whenText(v)}`;
+    ctlSlot.replaceChildren(...[controlFor(w, v, drawValue)].filter(Boolean));
+    note.textContent = v.writable ? (store.data && store.data.canControl ? 'You can change this. Changes are sent to the device and logged.'
+      : 'Only administrators can change this.') : 'Read-only sensor value.';
+  }
+  async function loadSeries() {
+    if (!numeric) { chart.el.classList.add('hidden'); seg.classList.add('hidden'); return; }
+    stats.replaceChildren(h('span', { class: 'small muted' }, 'Loading…'));
+    try {
+      const r = await get(`/sensors/series?thingId=${encodeURIComponent(first.thingId)}&propertyId=${encodeURIComponent(first.id)}&hours=${hours}`, { timeout: 30000 });
+      const pts = r.points;
+      chart.draw(pts, first.unit || '');
+      if (pts.length < 2) { stats.replaceChildren(h('span', { class: 'small muted' }, 'Not enough history for this time range yet.')); xFrom.textContent = ''; return; }
+      xFrom.textContent = `${hours} h ago`;
+      const vals = pts.map((p) => p[1]);
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const d = (x) => fmt(x, decimalsFor(Math.abs(x) < 10 ? Math.round(x * 100) / 100 : Math.round(x)));
+      const u = first.unit ? ` ${first.unit}` : '';
+      stats.replaceChildren(...(isBool(first)
+        ? [['On', `${Math.round((vals.filter((x) => x > 0.5).length / vals.length) * 100)}% of the time`], ['Changes', String(vals.filter((x, i) => i && (x > 0.5) !== (vals[i - 1] > 0.5)).length)]]
+        : [['Lowest', d(Math.min(...vals)) + u], ['Average', d(avg) + u], ['Highest', d(Math.max(...vals)) + u]])
+        .map(([k, val]) => h('div', null, h('span', null, k), h('b', null, val))));
+    } catch (err) { stats.replaceChildren(h('span', { class: 'small error-text' }, err.message)); }
+  }
+  const onData = () => drawValue();
+  modal((close) => [
+    h('div', { class: 'detail-head' }, h('div', null, h('h2', null, w.name), h('div', { class: 'small muted' }, [first.thing, first.name].filter(Boolean).join(' · '))),
+      h('button', { class: 'btn ghost icon', type: 'button', 'aria-label': 'Close', onclick: () => close() }, icon('x'))),
+    h('div', { class: 'row', style: { alignItems: 'baseline', gap: '10px' } }, h('div', { class: 'wvalue detail-value' }, big, unit), updated),
+    ctlSlot,
+    numeric ? h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', { class: 'small' }, 'History'), seg) : null,
+    chart.el,
+    numeric ? h('div', { class: 'xaxis' }, xFrom, h('span', null, 'now')) : null,
+    stats, note,
+  ], { wide: true, onClose: () => listeners.delete(onData) });
+  listeners.add(onData);
+  drawValue();
+  loadSeries();
 }
 
 // ------------------------------------------------------------------ data
@@ -476,7 +715,7 @@ export function sensorsCard({ full = false } = {}) {
       built = { page: null, sig: '', widgets: new Map() };
       return;
     }
-    const sig = current.widgets.map((w) => `${w.id}:${w.type}`).join(',');
+    const sig = current.widgets.map((w) => `${w.id}:${w.type}`).join(',') + `#${!!d.canControl}`;
     if (built.page !== current.id || built.sig !== sig || pageChanged) {
       built = { page: current.id, sig, widgets: new Map() };
       if (!current.widgets.length) {
@@ -495,7 +734,7 @@ export function sensorsCard({ full = false } = {}) {
     }
     for (const w of current.widgets) {
       const wd = built.widgets.get(w.id);
-      if (wd) wd.update(w);
+      if (wd) wd.update({ ...w, values: w.values.map((v) => currentValue(v.id) || withPending(v)) });
     }
   }
 
@@ -539,6 +778,10 @@ function connectDialog(after, existing = false) {
       } catch (err) { say(msg, err.message, 'error'); }
     }));
     const disconnect = existing ? h('button', { class: 'btn danger left', type: 'button' }, 'Disconnect') : null;
+    const janitors = existing ? switchEl(!!(store.data && store.data.janitorsControl), async (on, b) => {
+      try { await post('/admin/arduino/options', { janitorsControl: on }); toast(on ? 'Janitors can now use the controls.' : 'Only admins can use the controls now.'); refresh(); }
+      catch (err) { b.set(!on); toast(err.message, 'error'); }
+    }, 'Janitors can use the controls') : null;
     if (disconnect) {
       disconnect.addEventListener('click', () => busy(disconnect, '…', async () => {
         try { await post('/admin/arduino/clear'); store.series = {}; close(); toast('Arduino Cloud disconnected.'); after(); } catch (err) { say(msg, err.message, 'error'); }
@@ -549,6 +792,9 @@ function connectDialog(after, existing = false) {
         h('li', null, 'Open ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openExternal('https://app.arduino.cc/api-keys'); } }, 'app.arduino.cc/api-keys'), ' and sign in.'),
         h('li', null, 'Press Create API key, name it "AureoClean".'),
         h('li', null, 'Copy the Client ID and Client Secret here.')),
+      janitors ? h('div', { class: 'row', style: { gap: '10px' } }, janitors, h('div', { class: 'grow' }, h('b', { class: 'small' }, 'Janitors can use the controls'),
+        h('div', { class: 'small muted' }, 'Switches, sliders and buttons on the dashboard. Admins always can; every change is logged.'))) : null,
+      existing ? h('div', { class: 'small muted' }, 'To change the API key, paste a new one below.') : null,
       id, secret, org, msg,
       h('p', { class: 'small muted' }, 'The key stays on the Pi only. Your Arduino dashboards then show up here, page by page, with the same names.'),
       h('div', { class: 'actions' }, disconnect, h('button', { class: 'btn', onclick: () => close() }, 'Cancel'), save)];

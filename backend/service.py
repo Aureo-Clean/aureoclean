@@ -61,6 +61,7 @@ from .security import (
 )
 from .two_way import alert_text
 from .arduino import ArduinoCloud, ArduinoError
+from .web import RateLimit as _RateLimit
 from .insights import Insights
 from .report_ai import ReportAI
 from .llm import KeyRefused, LlmClient, LlmError, ModelGone
@@ -331,6 +332,7 @@ class AureoService:
         self.llm = LlmClient(settings.sms_settings_file.with_name("llm.json"))
         self.insights = Insights(self)
         self.report_ai = ReportAI(self)
+        self._control_limit = _RateLimit(30, 60)   # dashboard controls: 30 changes a minute per person
         self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
         self.store = store
         self.identity = identity
@@ -873,13 +875,84 @@ class AureoService:
 
     # ------------------------------------------------------------------ email set-up
     # ------------------------------------------------------------------ Arduino Cloud (live sensors)
-    def sensors(self) -> dict:
+    def can_control(self, session: Optional[Session]) -> bool:
+        """Admins may use dashboard controls; janitors only if an admin allowed it."""
+        if session is None:
+            return False
+        return session.role == ROLE_ADMIN or (session.role == ROLE_JANITOR and self.arduino.settings()["janitorsControl"])
+
+    def sensors(self, session: Optional[Session] = None) -> dict:
         if not self.arduino.configured:
             return {"configured": False, "things": []}
         try:
-            return {"configured": True, **self.arduino.readings()}
+            return {"configured": True, **self.arduino.readings(), "canControl": self.can_control(session),
+                    "janitorsControl": self.arduino.settings()["janitorsControl"]}
         except ArduinoError as exc:
             raise ServiceUnavailable(str(exc))
+
+    NUMBER_TYPES = ("INT", "FLOAT", "PERCENTAGE", "TEMPERATURE", "HUMIDITY", "LENGTH", "VOLUME", "LUMINANCE",
+                    "ILLUMINANCE", "PRESSURE", "DISTANCE", "VOLTAGE", "CURRENT", "POWER", "ENERGY", "FLOW",
+                    "CONCENTRATION", "GAS", "SOUND", "ANGLE", "FREQUENCY", "SPEED", "MASS", "TIME", "HOME_TEMPERATURE")
+
+    def sensor_control(self, session: Session, thing_id: str, prop_id: str, value) -> dict:
+        """Change a writable Arduino variable from a dashboard control (switch, slider, button …)."""
+        if not self.can_control(session):
+            raise Forbidden("Only administrators can use the controls (an admin can allow janitors in Arduino settings).")
+        if not self._control_limit.allow(session.uid):
+            raise BadRequest("Too many changes in a short time — wait a few seconds.")
+        try:
+            data = self.arduino.readings()
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+        prop = next((v for t in data["things"] if t["id"] == thing_id for v in t["properties"] if v["id"] == prop_id), None)
+        if prop is None:
+            raise NotFound("That sensor value isn't on Arduino Cloud any more.")
+        if not prop.get("writable"):
+            raise BadRequest(f"“{prop['label']}” is read-only in Arduino Cloud.")
+        typ = (prop.get("type") or "").upper()
+        limits = [w["options"] for p in data.get("pages", []) for w in p["widgets"]
+                  if any(v.get("id") == prop_id for v in w["values"])]
+        if typ in ("BOOL", "STATUS", "HOME_SWITCH", "HOME_CONTACT_SENSOR", "HOME_MOTION_SENSOR") or isinstance(prop.get("value"), bool):
+            if not isinstance(value, bool):
+                raise BadRequest("This one is on/off.")
+            shown = "On" if value else "Off"
+        elif typ.startswith(self.NUMBER_TYPES) or (isinstance(prop.get("value"), (int, float)) and not isinstance(prop.get("value"), bool)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or abs(value) > 1e9:
+                raise BadRequest("Type a number.")
+            if typ == "INT" or (isinstance(prop.get("value"), int) and float(value).is_integer()):
+                value = int(round(value))
+            for o in limits:
+                lo, hi = o.get("min"), o.get("max")
+                if isinstance(lo, (int, float)) and value < lo or isinstance(hi, (int, float)) and value > hi:
+                    raise BadRequest(f"Pick a value between {lo} and {hi}.")
+            shown = f"{value}{prop.get('unit') or ''}"
+        elif typ in ("STRING", "CHARSTRING") or isinstance(prop.get("value"), str):
+            if not isinstance(value, str):
+                raise BadRequest("Type a message.")
+            value = " ".join(value.split())[:256]
+            shown = f"“{value[:40]}”"
+        else:
+            raise BadRequest("This kind of control (colour, map, schedule …) isn't supported in AureoClean yet — use Arduino Cloud.")
+        try:
+            self.arduino.publish(thing_id, prop_id, value)
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+        self.audit("sensor_control", session.actor, prop_id, {"thing": thing_id, "variable": prop.get("name"), "value": str(value)[:60]})
+        return {"value": value, "shown": shown, "message": f"{prop['label']} → {shown}"}
+
+    def sensor_series(self, thing_id: str, prop_id: str, hours: int) -> dict:
+        try:
+            return {"points": self.arduino.series(thing_id, prop_id, hours), "hours": hours}
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+
+    def set_arduino_options(self, admin: Session, janitors_control: bool) -> dict:
+        try:
+            self.arduino.set_options(janitors_control)
+        except ArduinoError as exc:
+            raise BadRequest(str(exc))
+        self.audit("arduino_options", admin.actor, None, {"janitorsControl": janitors_control})
+        return {"janitorsControl": janitors_control}
 
     def sensor_history(self) -> dict:
         if not self.arduino.configured:

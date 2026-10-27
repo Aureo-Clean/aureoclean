@@ -28,7 +28,7 @@ const NUMBERS = [
   ['1', '2', '3', '{bksp}'],
   ['4', '5', '6', '{enter}'],
   ['7', '8', '9', '{hide}'],
-  ['{abc}', '0', '+', ''],
+  ['{abc}', '0', '.', '+'],
 ];
 const LABELS = { '{space}': 'space', '{abc}': 'ABC', '{sym}': '?123', '{more}': '#+=', '{enter}': 'Enter' };
 const TEXTISH = /^(text|password|email|search|tel|url|number)$/;

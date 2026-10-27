@@ -124,6 +124,14 @@ signs in to Arduino: the Pi reads everything itself with an **API key**.
 - **Widgets** follow Arduino's: gauges, percentage rings, LED/status lights, on/off, sliders as level
   bars, values with a small 6-hour trend line, charts (last 6 hours), messages and sticky notes.
   Controls are shown read-only — change values in Arduino Cloud.
+- **Interactive:** tap any tile for its details — a big chart for the last 1 h / 6 h / 24 h (touch or drag
+  along it to read the value at that moment), lowest / average / highest, and when it last updated.
+  Charts on the dashboard can be touched to read values too.
+- **Controls:** switches, push buttons (hold), sliders, steppers and messenger boxes change the device,
+  like in Arduino Cloud. Only variables that are *Read & Write* in Arduino Cloud can be changed; the Pi
+  checks the type and the widget's min/max, and every change is logged (System → Log). Admins can always
+  use them; janitors only after an admin turns on **Full view → Arduino settings → Janitors can use the
+  controls**. Colour, map and schedule controls stay in Arduino Cloud.
 - Values update in place every 5 s with gentle animations (the ring next to "Updated" counts down to
   the next refresh). If Arduino can't be reached, the last values stay on screen with a note.
 

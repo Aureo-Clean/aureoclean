@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -133,6 +133,16 @@ class FillBody(BaseModel):
 class PeriodBody(BaseModel):
     days: int = Field(default=30, ge=1, le=365)
     force: bool = False
+
+
+class ControlBody(BaseModel):
+    thingId: str = Field(max_length=80)
+    propertyId: str = Field(max_length=80)
+    value: Union[bool, int, float, str]
+
+
+class ArduinoOptionsBody(BaseModel):
+    janitorsControl: bool
 
 
 class ArduinoBody(BaseModel):
@@ -554,8 +564,20 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
 
     # ------------------------------------------------ live sensors (any role)
     @app.get("/sensors")
-    def sensors(_: Session = Depends(any_user)):
-        return svc().sensors()
+    def sensors(session: Session = Depends(any_user)):
+        return svc().sensors(session)
+
+    @app.post("/sensors/control")
+    def sensor_control(body: ControlBody, session: Session = Depends(any_user)):
+        return svc().sensor_control(session, body.thingId, body.propertyId, body.value)
+
+    @app.get("/sensors/series")
+    def sensor_series(thingId: str, propertyId: str, hours: int = 6, _: Session = Depends(any_user)):
+        return svc().sensor_series(thingId[:80], propertyId[:80], hours)
+
+    @app.post("/admin/arduino/options")
+    def arduino_options(body: ArduinoOptionsBody, session: Session = Depends(admin)):
+        return svc().set_arduino_options(session, body.janitorsControl)
 
     @app.get("/sensors/history")
     def sensor_history(_: Session = Depends(any_user)):

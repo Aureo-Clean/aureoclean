@@ -174,3 +174,102 @@ class FastUnlock(Base):
         with self.assertRaises(BadRequest):
             self.svc.unlock(self.admin, "4826")
         self.svc.unlock(self.admin, "7391")
+
+
+class FakeArduinoWithControls(FakeArduino):
+    """Adds writable variables (switch, number, text, colour) and accepts PUT …/publish."""
+
+    def __init__(self):
+        super().__init__()
+        self.published = []
+        self.extra = [
+            {"id": "f1", "variable_name": "exhaustFan", "type": "BOOL", "last_value": False, "permission": "READ_WRITE"},
+            {"id": "n1", "variable_name": "targetLevel", "type": "INT", "last_value": 40, "permission": "READ_WRITE"},
+            {"id": "m1", "variable_name": "lcdMessage", "type": "CHARSTRING", "last_value": "Hi", "permission": "READ_WRITE"},
+            {"id": "c1", "variable_name": "ledColor", "type": "COLOR", "last_value": {"hue": 1}, "permission": "READ_WRITE"},
+        ]
+        self.dashboards = [{"id": "d1", "name": "Urinal", "widgets": [
+            {"id": "w1", "type": "Slider", "name": "Target", "x": 0, "y": 0, "width": 1, "height": 1,
+             "options": {"min": 0, "max": 100}, "variables": [{"id": "n1", "thing_id": "t1", "variable_name": "targetLevel"}]}]}]
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        resp = super().get(url, headers, params, timeout)
+        if url.endswith("/iot/v2/things/t1/properties"):
+            return Resp(200, resp.json() + self.extra)
+        if url.endswith("/timeseries") and "/properties/n1/" in url:
+            self.calls.append(("series", params))
+            return Resp(200, {"data": [{"time": "2026-10-27T01:00:00Z", "value": 40}, {"time": "2026-10-27T02:00:00Z", "value": 55}]})
+        return resp
+
+    def put(self, url, headers=None, json=None, timeout=None):
+        assert headers["Authorization"] == "Bearer tok"
+        self.published.append((url.split("/iot/v2/things/")[1], json))
+        return Resp(200, {})
+
+
+class Controls(Base):
+    def setUp(self):
+        super().setUp()
+        self.fake = FakeArduinoWithControls()
+        self.svc.arduino.http = self.fake
+        self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")
+
+    def janitor(self):
+        req = self.svc.submit_janitor_request("Ana Reyes", "AnaReyes", "ana@example.com", "")
+        code = self.svc.approve_request(self.admin, req["requestId"])["code"]
+        self.svc.activate_janitor("AnaReyes", code, PW)
+        return self.svc.require_session(self.svc.login("AnaReyes", PW)["token"], "janitor")
+
+    def test_admin_switches_a_fan(self):
+        self.assertTrue(self.svc.sensors(self.admin)["canControl"])
+        r = self.svc.sensor_control(self.admin, "t1", "f1", True)
+        self.assertEqual(r["message"], "Exhaust fan → On")
+        self.assertEqual(self.fake.published, [("t1/properties/f1/publish", {"value": True})])
+        # Every screen sees it straight away, before the device's next reading.
+        fan = next(v for t in self.svc.sensors(self.admin)["things"] for v in t["properties"] if v["id"] == "f1")
+        self.assertIs(fan["value"], True)
+        audit = [d for _, d in self.svc.store.query(self.svc.C_AUDIT) if d.get("action") == "sensor_control"]
+        self.assertEqual(audit[-1]["details"]["variable"], "exhaustFan")
+
+    def test_checks(self):
+        with self.assertRaises(BadRequest):
+            self.svc.sensor_control(self.admin, "t1", "p1", 10)          # waterLevel is read-only
+        with self.assertRaises(BadRequest):
+            self.svc.sensor_control(self.admin, "t1", "f1", "yes")       # on/off needs true/false
+        with self.assertRaises(BadRequest) as cm:
+            self.svc.sensor_control(self.admin, "t1", "n1", 150)         # the slider goes 0–100
+        self.assertIn("between 0 and 100", str(cm.exception))
+        self.assertEqual(self.svc.sensor_control(self.admin, "t1", "n1", 55.0)["value"], 55)   # INT stays whole
+        self.assertEqual(self.svc.sensor_control(self.admin, "t1", "m1", "  Clean   now ")["value"], "Clean now")
+        with self.assertRaises(BadRequest):
+            self.svc.sensor_control(self.admin, "t1", "c1", "red")       # colours: use Arduino Cloud
+        from backend.service import NotFound
+        with self.assertRaises(NotFound):
+            self.svc.sensor_control(self.admin, "t1", "nope", True)
+
+    def test_janitors_only_when_allowed(self):
+        ana = self.janitor()
+        self.assertFalse(self.svc.sensors(ana)["canControl"])
+        from backend.service import Forbidden
+        with self.assertRaises(Forbidden):
+            self.svc.sensor_control(ana, "t1", "f1", True)
+        self.svc.set_arduino_options(self.admin, True)
+        self.assertTrue(self.svc.sensors(ana)["canControl"])
+        self.svc.sensor_control(ana, "t1", "f1", False)
+        # Reconnecting with a new key keeps the choice.
+        self.svc.set_arduino(self.admin, "client-id-123", "s3cret-secret")
+        self.assertTrue(self.svc.arduino.settings()["janitorsControl"])
+
+    def test_too_many_changes(self):
+        for _ in range(30):
+            self.svc.sensor_control(self.admin, "t1", "f1", True)
+        with self.assertRaises(BadRequest):
+            self.svc.sensor_control(self.admin, "t1", "f1", True)
+
+    def test_detail_chart_history(self):
+        r = self.svc.sensor_series("t1", "n1", 24)
+        self.assertEqual([v for _, v in r["points"]], [40.0, 55.0])
+        self.assertEqual(self.fake.calls[-1][1]["interval"], 720)        # 24 h in ~120 points
+        n = len(self.fake.calls)
+        self.svc.sensor_series("t1", "n1", 24)
+        self.assertEqual(len(self.fake.calls), n)                         # cached for a minute
