@@ -141,6 +141,19 @@ class ControlBody(BaseModel):
     value: Union[bool, int, float, str]
 
 
+class SensorAlertBody(BaseModel):
+    id: str = Field("", max_length=40)
+    thingId: str = Field(..., max_length=80)
+    propertyId: str = Field(..., max_length=80)
+    label: str = Field("", max_length=60)
+    op: str = Field(..., max_length=10)
+    limit: Optional[float] = None
+    level: str = Field(..., max_length=12)
+    minutes: int = 0
+    location: str = Field("", max_length=60)
+    on: bool = True
+
+
 class ArduinoOptionsBody(BaseModel):
     janitorsControl: bool
 
@@ -587,6 +600,22 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def arduino_connect(body: ArduinoBody, session: Session = Depends(admin)):
         return svc().set_arduino(session, body.clientId, body.clientSecret, body.org)
 
+    @app.get("/admin/sensor-alerts")
+    def sensor_alerts(_: Session = Depends(admin)):
+        return svc().sensor_alerts_overview()
+
+    @app.get("/admin/sensor-alerts/suggest")
+    def sensor_alert_suggest(thingId: str, propertyId: str, _: Session = Depends(admin)):
+        return svc().sensor_alert_suggestion(thingId[:80], propertyId[:80])
+
+    @app.post("/admin/sensor-alerts")
+    def sensor_alert_save(body: SensorAlertBody, session: Session = Depends(admin)):
+        return svc().save_sensor_alert(session, body.model_dump())
+
+    @app.post("/admin/sensor-alerts/{rule_id}/delete")
+    def sensor_alert_delete(rule_id: str, session: Session = Depends(admin)):
+        return svc().delete_sensor_alert(session, rule_id[:40])
+
     @app.post("/admin/arduino/clear")
     def arduino_clear(session: Session = Depends(admin)):
         return svc().clear_arduino(session)
@@ -683,6 +712,7 @@ def run() -> None:
     app.state.network.start()
     log.info("AureoClean API starting in %s mode on %s:%s", settings.mode, settings.host, settings.port)
     start_web_signup_import(service)
+    service.sensor_alerts.start()   # sensor limits → reports and texts (fixed rules), every 15 s
     from .web import WebAccess
 
     app.state.web = WebAccess(app, settings.sms_settings_file.with_name("web.json"))

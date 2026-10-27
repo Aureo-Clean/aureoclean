@@ -156,6 +156,35 @@ Admins open Arduino Cloud and the Firebase Console from **System → Kiosk & web
 **Google Chrome** (install once with `./tools/install_chrome.sh`). In Chrome, turn on
 *Settings → On start-up → Continue where you left off* so websites keep you signed in after closing Chrome.
 
+### Sensor alerts (sensor limits → reports and texts)
+
+A sensor value over its limit becomes a report and texts people — fixed rules on the Pi, no AI.
+Set one up as admin: tap a value on **Live sensors** (e.g. *Temperature*) → **Set an alert…**, or
+**Sensor alerts → Add alert**. Choose:
+
+| | Example |
+|---|---|
+| When | *goes above* / *goes below* a limit, or *turns on* / *turns off* (yes/no values) |
+| Limit | `35` °C · BME680 gas resistance *below* `40000` Ω (it drops when the air gets worse) · IAQ *above* `200` |
+| For at least | right away … 1 hour (ignores short spikes) |
+| Then | **Emergency** — report + text everyone · **Urgent** — report + text the janitors (admins after 10 min) · **Report only** — no text |
+| Restroom | where the sensor is (goes in the report and the text) |
+
+AureoClean suggests a first limit from what the value measures (temperature, humidity, BME680 gas/IAQ,
+ammonia, CO₂, smoke, leaks, soap/tissue levels); the detail chart shows the limit as a red dashed line, so
+watch it for a day and adjust. The Pi checks every 15 seconds, even with no screen open.
+
+* One report per problem: the text looks like
+  `AureoClean SENSOR ALERT #14: Temperature too high: 38.4 C at 2nd Floor - Male. Limit above 35 C. Reply OK 14 or DONE 14`
+  — janitors reply **OK 14 / DONE 14** as usual.
+* While the report is open, going over the limit again only adds a note. Back to normal for 2 minutes →
+  a "Back to normal" note (the janitor still marks it done). Marked done but still over → a new report after 30 minutes.
+* Readings older than 1 hour (device off?) never trigger or clear an alert. At most 12 sensor reports an hour
+  (emergencies always go through). Tiles over a limit turn amber, red with the report number once the alert went out.
+* Rules are kept on the Pi in `~/.config/aureoclean/sensor_alerts.json`; changes are in the audit log.
+  **System → Health** shows "Sensor alerts" (and fails if Arduino Cloud can't be read).
+* Texts need the GSM modem (not test mode) and janitors with a verified number (*My profile → SMS alerts*).
+
 ## SMS alerts
 
 **How a janitor (or admin) turns them on:** *My profile* → **SMS alerts** → type
@@ -417,6 +446,7 @@ backend/
   two_way.py       SMS replies (OK/DONE) and escalation
   health.py        System health checks
   arduino.py       Arduino Cloud dashboards, values and history (API key)
+  sensor_alerts.py sensor limits → reports and texts (fixed rules, checked every 15 s)
   llm.py           AI providers (Gemini, Claude, OpenAI-compatible / Ollama)
   insights.py      AI insights and questions (advice only), daily run
   report_ai.py     AI tips on reports, filling the report form, written period summaries

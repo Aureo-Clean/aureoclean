@@ -65,7 +65,7 @@ def mask_phone(phone: str) -> str:
 
 def gsm_text(text: str, limit: int = 160) -> str:
     """Keep to plain ASCII so one SMS = one segment in GSM 7-bit text mode."""
-    replacements = {"“": '"', "”": '"', "‘": "'", "’": "'", "–": "-", "—": "-", "…": "...", "·": "-", "ñ": "n", "Ñ": "N"}
+    replacements = {"“": '"', "”": '"', "‘": "'", "’": "'", "–": "-", "—": "-", "…": "...", "·": "-", "ñ": "n", "Ñ": "N", "°": "", "Ω": " ohm", "₂": "2"}
     for a, b in replacements.items():
         text = text.replace(a, b)
     text = text.encode("ascii", "replace").decode()

@@ -5,6 +5,7 @@
 // gentle animations; small charts show the last few hours.
 import { ago, busy, get, go, h, icon, modal, openExternal, post, session, shell, toast } from './core.js';
 import { field, message, say, switchEl } from './ui.js';
+import { STATE, alertEditor, alertsDialog, canAlert } from './sensor-alerts.js';
 
 const REFRESH_MS = 5000;
 const HISTORY_MS = 180000;
@@ -207,6 +208,8 @@ function sparkline({ height = 34, axis = false } = {}) {
       s('stop', { offset: '0%', 'stop-color': 'currentColor', 'stop-opacity': '.22' }),
       s('stop', { offset: '100%', 'stop-color': 'currentColor', 'stop-opacity': '0' }))),
     area, line, dot);
+  const lims = s('g', { class: 'slimits' });
+  if (axis) svg.append(lims);
   const lo = h('span'); const hi = h('span');
   const guide = h('div', { class: 'sguide hidden' });
   const mark = h('div', { class: 'smark hidden' });
@@ -241,10 +244,11 @@ function sparkline({ height = 34, axis = false } = {}) {
   }
   return {
     el,
-    draw(series, unit = '') {
+    draw(series, unit = '', limits = []) {
       el.classList.toggle('empty', series.length < 2);
+      lims.replaceChildren();
       if (series.length < 2) { last = null; return; }
-      const vals = series.map((p) => p[1]);
+      const vals = series.map((p) => p[1]).concat(limits.filter(isNum));
       let min = Math.min(...vals); let max = Math.max(...vals);
       if (max - min < 1e-9) { min -= 1; max += 1; }
       const pad = (max - min) * 0.12;
@@ -257,6 +261,10 @@ function sparkline({ height = 34, axis = false } = {}) {
       last = { series, pts, unit };
       const end = pts[pts.length - 1];
       dot.setAttribute('cx', end[0]); dot.setAttribute('cy', end[1]);
+      for (const L of limits.filter(isNum)) {   // alert limits: a dashed red line
+        const y = height - 2 - ((L - min) / (max - min)) * (height - 6);
+        lims.append(s('line', { x1: 0, x2: 300, y1: y, y2: y, class: 'slimit' }));
+      }
       const dd = decimalsFor(max - min < 10 ? 0.1 : 1);
       hi.textContent = fmt(max - pad, dd); lo.textContent = fmt(min + pad, dd);
     },
@@ -476,8 +484,25 @@ function makeWidget(w) {
     wd.el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(wd.el._w || w); } });
   }
   const update = wd.update;
-  wd.update = (w2) => { wd.el._w = w2; update(w2); };
+  const badge = h('span', { class: 'walert hidden' });
+  wd.el.querySelector('.whead').append(badge);
+  wd.update = (w2) => { wd.el._w = w2; update(w2); markAlerts(wd.el, badge, w2); };
   return wd;
+}
+
+// A value over its alert limit: amber while waiting, red once the alert went out (with the report number).
+function alertsFor(id) { return ((store.data && store.data.alerts) || {})[id] || []; }
+function worstAlert(w) {
+  const all = w.values.flatMap((v) => alertsFor(v.id));
+  return all.find((a) => a.state === 'alert') || all.find((a) => a.state === 'over') || null;
+}
+function markAlerts(el, badge, w) {
+  const a = worstAlert(w);
+  el.classList.toggle('sensor-alert', !!a && a.state === 'alert');
+  el.classList.toggle('sensor-over', !!a && a.state === 'over');
+  badge.classList.toggle('hidden', !a);
+  badge.replaceChildren(...(a ? [icon('bell'), a.state === 'alert' && a.ref ? `#${a.ref}` : 'Over limit'] : []));
+  badge.title = a ? a.text : '';
 }
 
 // ------------------------------------------------------------------ details (tap a tile)
@@ -534,6 +559,7 @@ function openDetail(w) {
   const xFrom = h('span');
   const stats = h('div', { class: 'detail-stats' });
   const note = h('div', { class: 'small muted' });
+  const alertSlot = h('div', { class: 'detail-alerts' });
   const seg = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Time range' }, [[1, '1 h'], [6, '6 h'], [24, '24 h']].map(([n, label]) =>
     h('button', { type: 'button', role: 'tab', 'aria-selected': String(n === hours), onclick: (e) => {
       hours = n; seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-selected', String(b === e.currentTarget))); loadSeries();
@@ -547,8 +573,35 @@ function openDetail(w) {
     else { big.textContent = v.value == null ? '—' : String(typeof v.value === 'object' ? JSON.stringify(v.value) : v.value).slice(0, 120); unit.textContent = ''; }
     updated.textContent = `${v.pending ? 'Sending… · ' : ''}${whenText(v)}`;
     ctlSlot.replaceChildren(...[controlFor(w, v, drawValue)].filter(Boolean));
+    drawAlerts(v);
     note.textContent = v.writable ? (store.data && store.data.canControl ? 'You can change this. Changes are sent to the device and logged.'
       : 'Only administrators can change this.') : 'Read-only sensor value.';
+  }
+  function drawAlerts(v) {
+    const admin = session.user && session.user.role === 'admin';
+    const rules = alertsFor(first.id);
+    const sig = JSON.stringify(rules) + admin;
+    if (alertSlot._sig === sig) return;
+    alertSlot._sig = sig;
+    if (!canAlert(v) || (!rules.length && !admin)) { alertSlot.replaceChildren(); return; }
+    const after = () => { refresh(); };
+    const edit = async (a) => {
+      try {
+        const r = await get('/admin/sensor-alerts');
+        const rule = r.rules.find((x) => x.id === a.id);
+        if (rule) { closeSheet(); alertEditor(v, rule, after); }
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    alertSlot.replaceChildren(
+      ...rules.map((a) => {
+        const [word, color] = STATE[a.state] || STATE.ok;
+        return h('div', { class: `alert-line ${a.state}` }, icon('bell'), h('div', { class: 'grow' }, h('b', null, a.text),
+          h('div', { class: 'small muted' }, { emergency: 'Emergency · texts everyone', urgent: 'Urgent · texts the janitors', report: 'Report only' }[a.level])),
+        h('span', { class: `chip ${color}` }, word + (a.ref ? ` #${a.ref}` : '')),
+        admin ? h('button', { class: 'btn sm', type: 'button', onclick: () => edit(a) }, 'Edit') : null);
+      }),
+      admin && !rules.length ? h('button', { class: 'btn block', type: 'button', onclick: () => { closeSheet(); alertEditor(v, null, after); } },
+        icon('bell'), 'Set an alert… (report + text when it goes over a limit)') : null);
   }
   async function loadSeries() {
     if (!numeric) { chart.el.classList.add('hidden'); seg.classList.add('hidden'); return; }
@@ -556,7 +609,7 @@ function openDetail(w) {
     try {
       const r = await get(`/sensors/series?thingId=${encodeURIComponent(first.thingId)}&propertyId=${encodeURIComponent(first.id)}&hours=${hours}`, { timeout: 30000 });
       const pts = r.points;
-      chart.draw(pts, first.unit || '');
+      chart.draw(pts, first.unit || '', alertsFor(first.id).map((a) => a.limit));
       if (pts.length < 2) { stats.replaceChildren(h('span', { class: 'small muted' }, 'Not enough history for this time range yet.')); xFrom.textContent = ''; return; }
       xFrom.textContent = `${hours} h ago`;
       const vals = pts.map((p) => p[1]);
@@ -570,11 +623,12 @@ function openDetail(w) {
     } catch (err) { stats.replaceChildren(h('span', { class: 'small error-text' }, err.message)); }
   }
   const onData = () => drawValue();
-  modal((close) => [
+  let closeSheet = () => {};
+  closeSheet = modal((close) => [
     h('div', { class: 'detail-head' }, h('div', null, h('h2', null, w.name), h('div', { class: 'small muted' }, [first.thing, first.name].filter(Boolean).join(' · '))),
       h('button', { class: 'btn ghost icon', type: 'button', 'aria-label': 'Close', onclick: () => close() }, icon('x'))),
     h('div', { class: 'row', style: { alignItems: 'baseline', gap: '10px' } }, h('div', { class: 'wvalue detail-value' }, big, unit), updated),
-    ctlSlot,
+    ctlSlot, alertSlot,
     numeric ? h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', { class: 'small' }, 'History'), seg) : null,
     chart.el,
     numeric ? h('div', { class: 'xaxis' }, xFrom, h('span', null, 'now')) : null,
@@ -643,7 +697,8 @@ export function sensorsCard({ full = false } = {}) {
   }
 
   // A page has an alarm when one of its yes/no values named like smoke, leak … is on.
-  const alarmOn = (pg) => pg.widgets.some((w) => w.values.some((v) => (v.value === true || v.value === 1) && ALERT_WORDS.test(`${w.name} ${v.name}`)));
+  const alarmOn = (pg) => pg.widgets.some((w) => w.values.some((v) => ((v.value === true || v.value === 1) && ALERT_WORDS.test(`${w.name} ${v.name}`))
+    || alertsFor(v.id).some((a) => a.state === 'alert')));
   const choose = (pg) => { page = pg.id; remember('aureo.sensorPageId', page); render(true); };
 
   function drawTabs(pages) {
@@ -672,9 +727,19 @@ export function sensorsCard({ full = false } = {}) {
     }
   }
 
+  function alertCount() {
+    const all = Object.values((store.data && store.data.alerts) || {}).flat();
+    const hot = all.filter((a) => a.state === 'alert').length;
+    return all.length ? h('span', { class: `n${hot ? ' hot' : ''}` }, hot ? `${hot} active` : String(all.length)) : null;
+  }
   function drawFoot(configured) {
+    const sig = `${configured}|${JSON.stringify((store.data && store.data.alerts) || {})}`;
+    if (foot._sig === sig) return;
+    foot._sig = sig;
     foot.replaceChildren(
       full && shell.isPi ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => shell.send('dashboard') }, icon('external'), 'Arduino\'s own dashboard') : null,
+      session.user && session.user.role === 'admin' && configured
+        ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => alertsDialog(store.data, () => refresh()) }, icon('bell'), 'Sensor alerts', alertCount()) : null,
       session.user && session.user.role === 'admin' && configured && full
         ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => connectDialog(() => refresh(), true) }, 'Arduino settings') : null);
   }

@@ -50,7 +50,7 @@ export function jobsView(_p, query) {
       h('div', { class: 'row' }, h('span', { style: { fontSize: '13px', fontWeight: '700', color: 'var(--navy)' } }, `#${j.ref || '—'}`),
         where === 'mine' ? h('span', { class: 'chip violet' }, 'With you') : where === 'done' ? h('span', { class: 'chip green' }, `Done by ${j.doneBy || '—'}`) : priorityChip(j.priority) || h('span', { class: 'chip blue' }, 'Open'),
         h('div', { class: 'grow' }), h('span', { class: 'small muted' }, ago(where === 'done' ? j.resolvedAt : j.createdAt))),
-      h('div', { class: 'title' }, j.title),
+      h('div', { class: 'title' }, j.source === 'sensor' ? h('span', { class: 'chip navy', style: { marginRight: '6px', verticalAlign: '2px' } }, icon('bell'), 'Sensor') : null, j.title),
       h('div', { class: 'where' }, icon('pin'), j.location || 'No place given'),
       j.details ? h('div', { class: 'details' }, j.details) : null,
       where !== 'done' ? aiJobTip(j.ai) : null);

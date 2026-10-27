@@ -143,6 +143,22 @@ class HealthMonitor:
                 out.append(_check(f"job_{key}", name, "warn", f"Last checked {int(age // 60)} min ago."))
             else:
                 out.append(_check(f"job_{key}", name, "ok", f"Checked {int(age)} s ago."))
+        alerts = getattr(self.svc, "sensor_alerts", None)
+        rules = [r for r in alerts.rules() if r.get("on")] if alerts is not None else []
+        if rules:   # sensor limits → reports and texts
+            st = self.svc.job_status.get("sensor_alerts")
+            n = f"{len(rules)} alert{'s' if len(rules) != 1 else ''}"
+            if not self.svc.arduino.configured:
+                out.append(_check("job_sensor_alerts", "Sensor alerts", "fail", f"{n} set, but Arduino Cloud isn't connected."))
+            elif not st:
+                out.append(_check("job_sensor_alerts", "Sensor alerts", "warn", f"{n} set; not checked yet (starting up?)."))
+            elif st.get("error"):
+                out.append(_check("job_sensor_alerts", "Sensor alerts", "fail",
+                                  f"Can't read the sensors, so no alerts: {st['error'][:120]}"))
+            else:
+                age = (utcnow() - parse_iso(st["at"])).total_seconds()
+                out.append(_check("job_sensor_alerts", "Sensor alerts", "warn" if age > 120 else "ok",
+                                  f"{n} watched; last checked {int(age)} s ago."))
         llm = getattr(self.svc, "llm", None)
         if llm is not None and llm.configured:   # AI insights: advice only, so at most a warning
             st = self.svc.job_status.get("insights")

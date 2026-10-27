@@ -64,6 +64,7 @@ from .arduino import ArduinoCloud, ArduinoError
 from .web import RateLimit as _RateLimit
 from .insights import Insights
 from .report_ai import ReportAI
+from .sensor_alerts import SensorAlertError, SensorAlerts, suggest as suggest_sensor_alert
 from .llm import KeyRefused, LlmClient, LlmError, ModelGone
 from .mailer import Mailer, MailError
 from .sms import (
@@ -332,6 +333,7 @@ class AureoService:
         self.llm = LlmClient(settings.sms_settings_file.with_name("llm.json"))
         self.insights = Insights(self)
         self.report_ai = ReportAI(self)
+        self.sensor_alerts = SensorAlerts(self, settings.sms_settings_file.with_name("sensor_alerts.json"))
         self._control_limit = _RateLimit(30, 60)   # dashboard controls: 30 changes a minute per person
         self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
         self.store = store
@@ -886,7 +888,8 @@ class AureoService:
             return {"configured": False, "things": []}
         try:
             return {"configured": True, **self.arduino.readings(), "canControl": self.can_control(session),
-                    "janitorsControl": self.arduino.settings()["janitorsControl"]}
+                    "janitorsControl": self.arduino.settings()["janitorsControl"],
+                    "alerts": self.sensor_alerts.for_screens(), "isAdmin": bool(session and session.role == ROLE_ADMIN)}
         except ArduinoError as exc:
             raise ServiceUnavailable(str(exc))
 
@@ -1061,6 +1064,60 @@ class AureoService:
 
     def insights_today(self) -> dict:
         return self.insights.today()
+
+    # ------------------------------------------------------------------ sensor alerts (fixed rules, no AI)
+    def sensor_alerts_overview(self) -> dict:
+        return {**self.sensor_alerts.overview(), "locations": public_locations(), "configured": self.arduino.configured}
+
+    def save_sensor_alert(self, admin: Session, data: dict) -> dict:
+        try:
+            values = self.arduino.readings()
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+        prop = next((v for t in values["things"] if t["id"] == data.get("thingId") for v in t["properties"]
+                     if v["id"] == data.get("propertyId")), None)
+        if prop is None:
+            raise NotFound("That sensor value isn't on Arduino Cloud any more.")
+        known = {loc["name"]: loc["code"] for loc in public_locations()}
+        location = data.get("location") or ""
+        if location and location not in known:
+            raise BadRequest("Pick the restroom from the list.")
+        try:
+            rule = self.sensor_alerts.save_rule({**data, "variable": prop["name"], "label": data.get("label") or prop["label"],
+                                                 "thing": prop.get("thing", ""), "unit": prop.get("unit", ""),
+                                                 "locationCode": known.get(location)}, by=admin.username)
+        except SensorAlertError as exc:
+            raise BadRequest(str(exc))
+        self.audit("sensor_alert_saved", admin.actor, rule["id"], {"rule": self.sensor_alerts.describe(rule),
+                                                                   "level": rule["level"], "on": rule["on"]})
+        return {"rule": rule, "message": f"Alert saved: {self.sensor_alerts.describe(rule)}."}
+
+    def delete_sensor_alert(self, admin: Session, rule_id: str) -> dict:
+        try:
+            rule = self.sensor_alerts.delete_rule(rule_id)
+        except SensorAlertError as exc:
+            raise NotFound(str(exc))
+        self.audit("sensor_alert_deleted", admin.actor, rule_id, {"rule": self.sensor_alerts.describe(rule)})
+        return {"message": "Alert deleted."}
+
+    def sensor_alert_suggestion(self, thing_id: str, prop_id: str) -> dict:
+        try:
+            values = self.arduino.readings()
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+        prop = next((v for t in values["things"] if t["id"] == thing_id for v in t["properties"] if v["id"] == prop_id), None)
+        if prop is None:
+            raise NotFound("That sensor value isn't on Arduino Cloud any more.")
+        history = []
+        if isinstance(prop.get("value"), (int, float)) and not isinstance(prop.get("value"), bool):
+            try:
+                history = self.arduino.series(thing_id, prop_id, 24)
+            except ArduinoError:
+                history = []
+        # The restroom used by another alert on the same thing is a good guess.
+        same = next((r for r in self.sensor_alerts.rules() if r["thingId"] == thing_id and r.get("location")), None)
+        return {**suggest_sensor_alert(prop, history), "location": same["location"] if same else "",
+                "label": prop["label"], "unit": prop.get("unit", "")}
 
     def clear_arduino(self, admin: Session) -> dict:
         self.arduino.clear()
@@ -1908,7 +1965,7 @@ class AureoService:
         done_by = r.get("resolvedBy") or {}
         return {
             "id": report_id, "ref": r.get("smsRef"), "title": r.get("title", ""), "location": r.get("location", ""),
-            "category": r.get("category"), "priority": r.get("priority"), "status": r.get("status"),
+            "category": r.get("category"), "priority": r.get("priority"), "status": r.get("status"), "source": r.get("source"),
             "details": (r.get("details") or "")[:300], "createdAt": r.get("reportedAt") or r.get("createdAt"),
             "takenBy": holder.get("name") or holder.get("username"), "mine": holder.get("uid") == me,
             "doneBy": done_by.get("name") or done_by.get("username"), "resolvedAt": r.get("resolvedAt"),

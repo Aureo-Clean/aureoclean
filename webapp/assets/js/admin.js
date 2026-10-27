@@ -154,7 +154,14 @@ function reportRow(r, isNew) {
 function sourceLabel(r) {
   if (r.source === 'public') return r.channel === 'qr' ? 'QR code' : 'Report page';
   if (r.source === 'janitor') return `From ${(r.createdBy || {}).username || 'a janitor'}`;
+  if (r.source === 'sensor') return 'Sensor alert';
   return 'Admin';
+}
+
+function sensorShow(value, unit) {
+  if (typeof value === 'boolean') return value ? 'on' : 'off';
+  if (typeof value !== 'number') return String(value ?? '—');
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: Math.abs(value) >= 100 ? 0 : 2 })}${unit ? ` ${unit}` : ''}`;
 }
 
 async function locationOptions() {
@@ -237,6 +244,8 @@ export function reportDetailView({ id }) {
       ['Reported', `${when(r.reportedAt || r.createdAt)} · ${sourceLabel(r)}`],
       r.assignedTo ? ['Taken by', `${r.assignedTo.name || r.assignedTo.username}${r.acceptedAt ? ' · ' + when(r.acceptedAt) : ''}`] : null,
       r.resolvedAt ? ['Done', when(r.resolvedAt)] : null,
+      r.sensor ? ['Sensor', `${r.sensor.label}: ${sensorShow(r.sensor.value, r.sensor.unit)}`] : null,
+      r.sensor ? ['Alert rule', r.sensor.rule] : null,
       r.rating ? ['Cleanliness', `${r.rating} / 5`] : null,
       r.issues && r.issues.length ? ['Problems', String(r.issues.length)] : null,
       contact ? ['Contact', [r.contact.name, r.contact.phone].filter(Boolean).join(' · ')] : null,

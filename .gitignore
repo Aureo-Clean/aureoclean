@@ -14,3 +14,4 @@ exports/
 arduino.json
 mail.json
 llm.json
+sensor_alerts.json
