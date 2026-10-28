@@ -2,6 +2,7 @@
 import { ago, busy, cached, firstName, get, h, icon, peek, post, session, toast, invalidate } from './core.js';
 import { aiFillBox, aiJobTip, DANGER_NOTE, tipsCard } from './insights.js';
 import { sensorsCard } from './sensors.js';
+import { smartStrip } from './smart.js';
 import { empty, errorBox, message, pageHead, priorityChip, say, segmented } from './ui.js';
 
 export function jobsView(_p, query) {
@@ -183,6 +184,7 @@ export function sensorsView() {
   const report = h('a', { class: 'btn primary block', href: '#/report' }, icon('plus'), 'Report a problem');
   const view = h('div', { class: 'stack enter', style: { flex: '1', minHeight: '0' } },
     h('header', { class: 'page-head' }, h('div', null, h('h1', null, `Hi ${firstName(session.user)}`), h('div', { class: 'sub' }, new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })))),
+    smartStrip(),
     h('div', { class: 'home-grid' }, sensorsCard(), h('aside', { class: 'side-stats' }, openCard, mineCard, report)));
   view.refresh = async () => {
     try {

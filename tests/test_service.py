@@ -27,7 +27,9 @@ def make_service(**overrides) -> AureoService:
     overrides.setdefault("sms_settings_file", Path(tempfile.mkdtemp(prefix="aureo-test-")) / "sms.json")
     settings = dataclasses.replace(load_settings(), mode="local", **overrides)
     backend = LocalBackend(":memory:")
-    return AureoService(settings, backend, backend)
+    svc = AureoService(settings, backend, backend)
+    svc.smart.save_config({"quietStart": 0, "quietEnd": 0})   # no quiet hours unless a test sets them
+    return svc
 
 
 class Base(unittest.TestCase):

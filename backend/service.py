@@ -65,6 +65,8 @@ from .web import RateLimit as _RateLimit
 from .insights import Insights
 from .report_ai import ReportAI
 from .sensor_alerts import SensorAlertError, SensorAlerts, suggest as suggest_sensor_alert
+from .smart import SETTINGS as SMART_SETTINGS, Smart
+from .advice import Advice
 from .llm import KeyRefused, LlmClient, LlmError, ModelGone
 from .mailer import Mailer, MailError
 from .sms import (
@@ -334,6 +336,9 @@ class AureoService:
         self.insights = Insights(self)
         self.report_ai = ReportAI(self)
         self.sensor_alerts = SensorAlerts(self, settings.sms_settings_file.with_name("sensor_alerts.json"))
+        self.smart = Smart(self, settings.sms_settings_file.parent)
+        self.advice = Advice(self)
+        self._seen_at: dict[str, float] = {}   # uid → when lastSeenAt was last saved (for "active today")
         self._control_limit = _RateLimit(30, 60)   # dashboard controls: 30 changes a minute per person
         self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
         self.store = store
@@ -728,7 +733,25 @@ class AureoService:
             raise Unauthorized("Your session has ended. Please sign in again.")
         if role and session.role != role:
             raise Forbidden("You do not have permission to do that.")
+        self.mark_seen(session.uid)
         return session
+
+    def mark_seen(self, uid: str) -> None:
+        """Remember that this person used AureoClean (app or SMS reply) — emergencies text everyone active today."""
+        now = time.monotonic()
+        if now - self._seen_at.get(uid, -1e9) < 600:
+            return
+        self._seen_at[uid] = now
+
+        def seen(current):
+            if not current:
+                return None
+            current["lastSeenAt"] = iso(utcnow())
+            return current
+        try:
+            self.store.transact(self.C_USERS, uid, seen)
+        except Exception:  # noqa: BLE001 - never block a request for this
+            self._seen_at.pop(uid, None)
 
     def verify_admin(self, identifier: str, password: str) -> dict:
         """Check an admin's username/email and password without starting a session
@@ -889,7 +912,8 @@ class AureoService:
         try:
             return {"configured": True, **self.arduino.readings(), "canControl": self.can_control(session),
                     "janitorsControl": self.arduino.settings()["janitorsControl"],
-                    "alerts": self.sensor_alerts.for_screens(), "isAdmin": bool(session and session.role == ROLE_ADMIN)}
+                    "alerts": self.sensor_alerts.for_screens(), "smart": self.smart.problems_for_screens(),
+                    "isAdmin": bool(session and session.role == ROLE_ADMIN)}
         except ArduinoError as exc:
             raise ServiceUnavailable(str(exc))
 
@@ -1144,6 +1168,86 @@ class AureoService:
         same = next((r for r in self.sensor_alerts.rules() if r["thingId"] == thing_id and r.get("location")), None)
         return {**suggest_sensor_alert(prop, history), "location": same["location"] if same else "",
                 "label": prop["label"], "unit": prop.get("unit", "")}
+
+    # ------------------------------------------------------------------ smart monitoring + daily advice
+    def smart_overview(self) -> dict:
+        return {**self.smart.overview(), "configured": self.arduino.configured}
+
+    def smart_cleaned(self, session: Session, thing_id: str) -> dict:
+        try:
+            c = self.smart.cleaned(thing_id)
+        except ValueError as exc:
+            raise BadRequest(str(exc))
+        name = (self.smart.units_seen.get(thing_id) or {}).get("name", thing_id)
+        self.audit("smart_cleaned", session.actor, thing_id, {"unit": name, "uses": c.get("uses")})
+        # Close an open "cleaning due" job for this unit.
+        p = self.smart.state["problems"].get(f"{thing_id}:clean")
+        if p and p.get("reportId") and self.smart._status(p["reportId"]) not in (None, "resolved"):
+            self._add_report_note(p["reportId"], session.actor, f"Cleaned ({session.username}, via Cleaned button)", "resolved")
+        return {"message": f"{name}: counting uses from zero again. Thank you!"}
+
+    def smart_settings(self) -> dict:
+        cfg = self.smart.config()
+        units = []
+        try:
+            data = self.arduino.readings() if self.arduino.configured else {"things": []}
+            units = [{"id": u["id"], "name": u["name"], "location": u["location"], "kind": u["kind"], "on": u["on"],
+                      "variables": sorted(u["vars"])} for u in self.smart._units(data, cfg)]
+        except ArduinoError:
+            pass
+        return {"config": cfg, "settings": [{"key": k, "min": v[0], "max": v[1], "label": v[4], "value": cfg[k]}
+                                            for k, v in SMART_SETTINGS.items()],
+                "units": units, "locations": public_locations(), "quiet": self.smart.quiet(cfg=cfg)}
+
+    def save_smart_settings(self, admin: Session, changes: dict) -> dict:
+        units = changes.get("units")
+        if isinstance(units, dict):
+            known = {loc["name"]: loc["code"] for loc in public_locations()}
+            for u in units.values():
+                if isinstance(u, dict) and u.get("location") and u["location"] not in known:
+                    raise BadRequest("Pick the restroom from the list.")
+                if isinstance(u, dict) and u.get("location"):
+                    u["locationCode"] = known[u["location"]]
+        try:
+            cfg = self.smart.save_config(changes)
+        except ValueError as exc:
+            raise BadRequest(str(exc))
+        self.audit("smart_settings", admin.actor, None, {k: (v if k != "units" else len(v)) for k, v in changes.items()})
+        return {"config": cfg, "message": "Smart monitoring settings saved."}
+
+    def advice_today(self, session: Session) -> dict:
+        return self.advice.today(session.role)
+
+    def refresh_advice(self, admin: Session) -> dict:
+        saved = self.advice.saved() or {}
+        if saved.get("createdAt") and not saved.get("live"):
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(saved["createdAt"])).total_seconds()
+            if age < 120:
+                raise BadRequest("The advice was just made — wait a minute.")
+        if self.advice.running:
+            return {"running": True}
+        self.advice.start(admin.actor, "manual")
+        return {"running": True, "message": "Making today's advice…"}
+
+    def apply_advice(self, admin: Session, setting: str, value) -> dict:
+        from .advice import TUNABLE
+        if setting not in TUNABLE:
+            raise BadRequest("That setting can't be changed from the advice.")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise BadRequest("Bad value.")
+        try:
+            self.smart.save_config({setting: value})
+        except ValueError as exc:
+            raise BadRequest(str(exc))
+        saved = self.advice.saved()
+        if saved:
+            saved["suggestions"] = [s for s in saved.get("suggestions") or [] if s.get("setting") != setting]
+            self.store.set(self.advice.collection, "advice", saved)
+        label = SMART_SETTINGS[setting][4]
+        self.audit("smart_settings", admin.actor, None, {setting: value, "from": "advice"})
+        return {"message": f"Changed: {label} → {value:g}."}
 
     def clear_arduino(self, admin: Session) -> dict:
         self.arduino.clear()
@@ -1505,6 +1609,73 @@ class AureoService:
             if u.get("smsAlerts") and u.get("smsPhone")
         ]
 
+    def emergency_recipients(self, exclude_uid: Optional[str] = None) -> list[dict]:
+        """Real emergencies text everyone active today: people who used the app or replied by SMS today,
+        plus every SMS-only contact (they never sign in). If nobody was active today, everyone with SMS on."""
+        from .analysis import LOCAL_TZ
+        today = datetime.now(LOCAL_TZ).date()
+
+        def active(u):
+            if u.get("smsOnly"):
+                return True
+            for k in ("lastSeenAt", "lastLoginAt"):
+                try:
+                    if u.get(k) and datetime.fromisoformat(u[k]).astimezone(LOCAL_TZ).date() == today:
+                        return True
+                except ValueError:
+                    pass
+            return False
+        everyone = [u for _, u in self.store.query(self.C_USERS, status="active")
+                    if u.get("smsAlerts") and u.get("smsPhone") and u["uid"] != exclude_uid]
+        chosen = [u for u in everyone if active(u)] or everyone
+        return [{"uid": u["uid"], "username": u["username"], "role": u["role"], "phone": u["smsPhone"]} for u in chosen]
+
+    def alert_people(self, report_id: str, audience: str, text: str, exclude_uid: Optional[str] = None,
+                     force: bool = False) -> int:
+        """Text an alert. "emergency" → everyone active today, at any hour. "janitors" → the janitors, but
+        during quiet hours (7 PM–5 AM) the text waits until morning (sent then if the job is still open).
+        Returns how many were texted (0 when held)."""
+        if audience == "emergency":
+            recipients = self.emergency_recipients(exclude_uid)
+        else:
+            if not force and self.smart.quiet():
+                def hold(current):
+                    if current is None:
+                        return None
+                    current["smsDeferred"] = {"audience": audience, "text": text, "at": iso(utcnow())}
+                    return current
+                self.store.transact(self.C_REPORTS, report_id, hold)
+                self._add_report_note(report_id, {"type": "system", "username": "sms"},
+                                      f"Quiet hours ({self.smart.quiet_text()}): the text to the janitors goes out "
+                                      "in the morning if this is still open.")
+                return 0
+            recipients = [r for r in self.sms_recipients(ROLE_JANITOR) if r["uid"] != exclude_uid]
+        self._notify_async(report_id, recipients, text)
+        return len(recipients)
+
+    def send_deferred_texts(self) -> int:
+        """After quiet hours: send the texts that were held overnight (only for jobs still open)."""
+        if self.smart.quiet():
+            return 0
+        sent = 0
+        for status in ("open", "in_progress"):
+            for rid, r in self.store.query(self.C_REPORTS, status=status):
+                held = r.get("smsDeferred")
+                if not held:
+                    continue
+
+                def clear(current):
+                    if current is None or not current.get("smsDeferred"):
+                        return None
+                    current.pop("smsDeferred", None)
+                    return current
+                if self.store.transact(self.C_REPORTS, rid, clear) is None:
+                    continue
+                if status == "in_progress":   # someone already has it
+                    continue
+                sent += self.alert_people(rid, held.get("audience", "janitors"), held["text"], force=True)
+        return sent
+
     # ------------------------------------------------ admin SMS tools
     def sms_settings(self) -> dict:
         port = getattr(self.sms, "port", "")
@@ -1769,11 +1940,11 @@ class AureoService:
                 count += 1
                 # Deterministic alerting (never left to the AI): emergencies text everyone,
                 # urgent problems text the janitors.
-                notify = "everyone" if category == "emergency" else ("janitors" if urgency == "high" else "none")
+                notify = "emergency" if category == "emergency" else ("janitors" if urgency == "high" else "none")
                 if notify != "none":
                     label = "EMERGENCY" if category == "emergency" else "URGENT"
                     text = alert_text(label, report["smsRef"], report["title"], report["location"], report["details"])
-                    self._notify_async(report["id"], self.sms_recipients(None if notify == "everyone" else ROLE_JANITOR), text)
+                    self.alert_people(report["id"], notify, text)
             finally:
                 self.store.delete(self.C_PUBLIC_REPORTS, doc_id)
         return count
@@ -1914,7 +2085,13 @@ class AureoService:
             current["updatedAt"] = now
             return current
 
-        return self.store.transact(self.C_REPORTS, report_id, update)
+        report = self.store.transact(self.C_REPORTS, report_id, update)
+        if status == "resolved":
+            try:
+                self.smart.report_done(report)   # a cleaning done → count uses from zero again
+            except Exception:  # noqa: BLE001 - never block marking a job done
+                pass
+        return report
 
     def update_report(self, admin: Session, report_id: str, status: str = "", note: str = "") -> dict:
         if status and status not in self.REPORT_STATUSES:
@@ -2096,10 +2273,9 @@ class AureoService:
         self.audit("report_created", session.actor, report_id, {"category": category, "title": report["title"]})
         notified = 0
         if category == "emergency":
-            recipients = [r for r in self.sms_recipients() if r["uid"] != session.uid]
-            self._notify_async(report_id, recipients,
-                               alert_text("EMERGENCY", report["smsRef"], report["title"], location, report["details"]))
-            notified = len(recipients)
+            notified = self.alert_people(report_id, "emergency",
+                                         alert_text("EMERGENCY", report["smsRef"], report["title"], location, report["details"]),
+                                         exclude_uid=session.uid)
         return {"id": report_id, "ref": report["smsRef"], "title": report["title"], "notified": notified,
                 "message": f"Report #{report['smsRef']} sent." + (f" Texting {notified} people." if notified else "")}
 

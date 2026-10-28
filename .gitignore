@@ -15,3 +15,5 @@ arduino.json
 mail.json
 llm.json
 sensor_alerts.json
+smart.json
+smart_state.json

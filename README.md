@@ -156,6 +156,35 @@ Admins open Arduino Cloud and the Firebase Console from **System → Kiosk & web
 **Google Chrome** (install once with `./tools/install_chrome.sh`). In Chrome, turn on
 *Settings → On start-up → Continue where you left off* so websites keep you signed in after closing Chrome.
 
+### Smart monitoring (trends → jobs and texts) and today's advice
+
+Every ESP32 unit with the AureoClean variables (`temperature`, `iaq`, `iaqAccuracy`, `gasResistance`,
+`sensorStatus`, `totalToFUsers`/`totalUses`, `totalFlushes`, `flushThreshold` …) is watched by the Pi every
+5 seconds — fixed rules, no AI, no internet to the AI needed. Set each unit's restroom once:
+**Home → tap a unit → Smart settings** (or Live sensors → Full view → Smart settings).
+
+| Trend | What happens |
+|---|---|
+| ≥ 50 °C for 30 s · rising 8 °C in 2 min (and ≥ 38 °C) · heat + sudden bad air together | **Emergency**: texts everyone active today (signed in or replied by SMS today, plus SMS-only contacts), at any hour |
+| Above 35 °C for 10 min | job; 20 min → texts the janitors |
+| BSEC IAQ above 150 for 10 min (raw gas 40 % below this hour's normal while IAQ calibrates) | job (says whether it followed heavy use or the unit was barely used); 20 min, or IAQ > 250 for 5 min → texts the janitors |
+| Uses since the last cleaning ≥ 120 (ToF count) | "Cleaning due" job; 1.5× → texts the janitors. Marking a cleaning job done, or **Cleaned it** on the unit, starts the count again |
+| Uses keep coming but `totalFlushes` doesn't move | "Auto-flush may be broken" job |
+| BME680 error status for 5 min · no data for 10 min | job for the admin |
+
+* **Quiet hours 7 PM–5 AM**: no texts except emergencies; held texts go out at 5 AM if the job is still open,
+  and only emergencies escalate at night. (This applies to every alert, not just the sensors.)
+* One job per problem; it can move up (job → text janitors → emergency), never down. A report people already
+  made about the same thing in that restroom gets a "Sensors agree" note instead of a second job.
+  Back to normal for 2 min → a note; marked done but still happening → a new job after 30 min.
+* It learns each unit's normal per hour of the day and counts uses per hour (first from Arduino's last 3 days).
+* **Today's plan** (Home, admins and janitors): when quiet hours end, the AI (if set up) writes the janitors'
+  plan — clean before the busy hours, when the air usually gets bad, what's due — and advice for the admins,
+  sometimes with a suggested setting an admin can apply with one tap. Without the AI, the same patterns are
+  turned into advice by fixed rules. The AI never decides alerts.
+* All limits are in **Smart settings**; saved on the Pi in `~/.config/aureoclean/smart.json` (learned data:
+  `smart_state.json`). **System → Health** shows "Smart monitoring" and offline units.
+
 ### Sensor alerts (sensor limits → reports and texts)
 
 A sensor value over its limit becomes a report and texts people — fixed rules on the Pi, no AI.
@@ -450,6 +479,8 @@ backend/
   health.py        System health checks
   arduino.py       Arduino Cloud dashboards, values and history (API key)
   sensor_alerts.py sensor limits → reports and texts (fixed rules, checked every 15 s)
+  smart.py         smart monitoring: trends from the ESP32 units → jobs, texts, quiet hours
+  advice.py        today's plan for janitors and admins (AI, or fixed rules without it)
   llm.py           AI providers (Gemini, Claude, OpenAI-compatible / Ollama)
   insights.py      AI insights and questions (advice only), daily run
   report_ai.py     AI tips on reports, filling the report form, written period summaries

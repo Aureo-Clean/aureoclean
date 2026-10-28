@@ -567,13 +567,11 @@ class SensorAlerts:
         self.svc.audit("sensor_alert", {"type": "system", "username": "sensors"}, report["id"],
                        {"rule": self.describe(rule), "value": str(value)[:30], "level": rule["level"]})
         if level["notify"] != "none":
-            from .service import ROLE_JANITOR
-            recipients = self.svc.sms_recipients(None if level["notify"] == "everyone" else ROLE_JANITOR)
             text = alert_text(("TEST " if test_by else "") + level["sms"], report["smsRef"], report["title"].removeprefix("TEST "),
                               report["location"],
                               limit[:1].upper() + limit[1:] if limit else "")
-            self.svc._notify_async(report["id"], recipients, text)
-            report["texted"] = len(recipients)
+            report["texted"] = self.svc.alert_people(report["id"], "emergency" if level["notify"] == "everyone" else "janitors",
+                                                     text, force=bool(test_by))
         else:
             report["texted"] = 0
         return report

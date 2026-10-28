@@ -6,6 +6,7 @@
 import { ago, busy, get, go, h, icon, modal, openExternal, post, session, shell, toast } from './core.js';
 import { field, message, say, switchEl } from './ui.js';
 import { STATE, alertEditor, alertsDialog, canAlert } from './sensor-alerts.js';
+import { smartSettingsDialog } from './smart.js';
 
 const REFRESH_MS = 5000;
 const HISTORY_MS = 180000;
@@ -492,8 +493,13 @@ function makeWidget(w) {
 
 // A value over its alert limit: amber while waiting, red once the alert went out (with the report number).
 function alertsFor(id) { return ((store.data && store.data.alerts) || {})[id] || []; }
+const SMART_VAR = { temperature: 'temperature', iaq: 'iaq', gasresistance: 'gas', totalflushes: 'flushes', totaltofusers: 'uses', totaluses: 'uses' };
+function smartFor(v) {
+  const tier = (((store.data && store.data.smart) || {})[v.thingId] || {})[SMART_VAR[(v.name || '').toLowerCase()]];
+  return tier ? [{ state: tier >= 1 ? 'alert' : 'over', text: 'Smart alert', ref: null, smart: true }] : [];
+}
 function worstAlert(w) {
-  const all = w.values.flatMap((v) => alertsFor(v.id));
+  const all = w.values.flatMap((v) => alertsFor(v.id).concat(smartFor(v)));
   return all.find((a) => a.state === 'alert') || all.find((a) => a.state === 'over') || null;
 }
 function markAlerts(el, badge, w) {
@@ -741,6 +747,8 @@ export function sensorsCard({ full = false } = {}) {
       full && shell.isPi ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => shell.send('dashboard') }, icon('external'), 'Arduino\'s own dashboard') : null,
       session.user && session.user.role === 'admin' && configured
         ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => alertsDialog(store.data, () => refresh()) }, icon('bell'), 'Sensor alerts', alertCount()) : null,
+      session.user && session.user.role === 'admin' && configured && full
+        ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => smartSettingsDialog() }, icon('settings'), 'Smart settings') : null,
       session.user && session.user.role === 'admin' && configured && full
         ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => connectDialog(() => refresh(), true) }, 'Arduino settings') : null);
   }

@@ -154,6 +154,12 @@ class SensorAlertBody(BaseModel):
     on: bool = True
 
 
+class SmartSettingsBody(BaseModel):
+    enabled: Optional[bool] = None
+    units: Optional[dict] = None
+    values: dict = Field(default_factory=dict)
+
+
 class ArduinoOptionsBody(BaseModel):
     janitorsControl: bool
 
@@ -620,6 +626,40 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     def sensor_alert_delete(rule_id: str, session: Session = Depends(admin)):
         return svc().delete_sensor_alert(session, rule_id[:40])
 
+    # ------------------------------------------------ smart monitoring (trends → jobs; fixed rules) and daily advice
+    @app.get("/smart")
+    def smart_overview(_: Session = Depends(any_user)):
+        return svc().smart_overview()
+
+    @app.post("/smart/units/{thing_id}/cleaned")
+    def smart_cleaned(thing_id: str, session: Session = Depends(any_user)):
+        return svc().smart_cleaned(session, thing_id[:80])
+
+    @app.get("/admin/smart/settings")
+    def smart_settings(_: Session = Depends(admin)):
+        return svc().smart_settings()
+
+    @app.post("/admin/smart/settings")
+    def smart_settings_save(body: SmartSettingsBody, session: Session = Depends(admin)):
+        changes = dict(body.values)
+        if body.enabled is not None:
+            changes["enabled"] = body.enabled
+        if body.units is not None:
+            changes["units"] = body.units
+        return svc().save_smart_settings(session, changes)
+
+    @app.get("/advice")
+    def advice(session: Session = Depends(any_user)):
+        return svc().advice_today(session)
+
+    @app.post("/admin/advice/refresh")
+    def advice_refresh(session: Session = Depends(admin)):
+        return svc().refresh_advice(session)
+
+    @app.post("/admin/advice/apply")
+    def advice_apply(body: dict, session: Session = Depends(admin)):
+        return svc().apply_advice(session, str(body.get("setting", ""))[:40], body.get("value"))
+
     @app.post("/admin/arduino/clear")
     def arduino_clear(session: Session = Depends(admin)):
         return svc().clear_arduino(session)
@@ -717,6 +757,8 @@ def run() -> None:
     log.info("AureoClean API starting in %s mode on %s:%s", settings.mode, settings.host, settings.port)
     start_web_signup_import(service)
     service.sensor_alerts.start()   # sensor limits → reports and texts (fixed rules), every 15 s
+    service.smart.start()           # smart monitoring: trends → jobs and texts (fixed rules), every 5 s
+    threading.Thread(target=service.smart.seed, daemon=True, name="smart-seed").start()   # learn from Arduino history
     from .web import WebAccess
 
     app.state.web = WebAccess(app, settings.sms_settings_file.with_name("web.json"))
@@ -753,6 +795,10 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
                     service.insights.tick()   # the morning AI insights, when switched on (runs in its own thread)
                 except Exception:  # noqa: BLE001
                     log.warning("Daily insights check failed; will retry", exc_info=True)
+                try:
+                    service.advice.tick()     # the day's advice on Home, when quiet hours end
+                except Exception:  # noqa: BLE001
+                    log.warning("Daily advice check failed; will retry", exc_info=True)
             try:
                 n_signups, n_reports = service.run_job(
                     "web", lambda: (service.import_web_signups(), service.import_public_reports()))

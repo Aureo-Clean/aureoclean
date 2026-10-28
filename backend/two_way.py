@@ -99,6 +99,7 @@ class TwoWaySms:
             return {"action": "ignored", "reason": "number is not an AureoClean contact"}
         user = users[0]
         actor = {"type": user["role"], "uid": user["uid"], "username": user["username"], "via": "sms"}
+        svc.mark_seen(user["uid"])   # replying by SMS counts as active today
         command, ref = parse_reply(text)
         svc.audit("sms_reply_received", actor, None, {"text": (text or "")[:60]})
 
@@ -179,6 +180,8 @@ class TwoWaySms:
         for report_id, r in svc.store.query(svc.C_REPORTS, status="open"):
             if not r.get("notifiedAt") or r.get("escalatedAt") or parse_iso(r["notifiedAt"]) > cutoff:
                 continue
+            if r.get("priority") != "critical" and svc.smart.quiet():
+                continue   # quiet hours: only emergencies escalate at night
 
             def mark(current):
                 if current.get("escalatedAt") or current.get("status") != "open":

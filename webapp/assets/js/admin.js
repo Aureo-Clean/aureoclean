@@ -9,6 +9,7 @@ import {
 } from './ui.js';
 import { aiFillBox, aiHeadline, aiTipCard, DANGER_NOTE, periodSummaryCard } from './insights.js';
 import { sensorsCard } from './sensors.js';
+import { smartStrip } from './smart.js';
 
 const PUBLIC_SITE = 'https://aureo-clean.github.io/aureoclean/';
 
@@ -41,6 +42,7 @@ export function homeView() {
     h('header', { class: 'page-head' },
       h('div', null, h('h1', null, `${greeting()}, ${firstName(session.user)}`), h('div', { class: 'sub' }, today())),
       h('div', { class: 'grow' }), pill),
+    smartStrip(),
     h('div', { class: 'home-grid' }, sensors, h('aside', { class: 'side-stats' }, openCard, waitCard, todayCard)));
 
 

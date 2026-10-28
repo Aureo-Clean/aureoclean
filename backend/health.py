@@ -143,6 +143,18 @@ class HealthMonitor:
                 out.append(_check(f"job_{key}", name, "warn", f"Last checked {int(age // 60)} min ago."))
             else:
                 out.append(_check(f"job_{key}", name, "ok", f"Checked {int(age)} s ago."))
+        smart = getattr(self.svc, "smart", None)
+        if smart is not None and self.svc.arduino.configured and smart.config()["enabled"]:
+            ov = smart.overview()
+            ck, units = ov["checker"], ov["units"]
+            if ck["error"]:
+                out.append(_check("job_smart", "Smart monitoring", "fail", f"Can't watch the units: {ck['error'][:120]}"))
+            elif not ck["running"] or ck["ago"] is None or ck["ago"] > 60:
+                out.append(_check("job_smart", "Smart monitoring", "warn", "Not checking right now (starting up? restart AureoClean)."))
+            else:
+                offline = [u["name"] for u in units if not u["online"]]
+                out.append(_check("job_smart", "Smart monitoring", "warn" if offline else "ok",
+                                  f"{len(units)} unit(s) watched every {ck['every']} s" + (f"; offline: {', '.join(offline)}" if offline else "")))
         alerts = getattr(self.svc, "sensor_alerts", None)
         rules = [r for r in alerts.rules() if r.get("on")] if alerts is not None else []
         if rules:   # sensor limits → reports and texts
