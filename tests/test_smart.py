@@ -355,3 +355,46 @@ class DailyAdvice(SmartBase):
         self.assertIn("Cleaning due after (uses) → 80", r["message"])
         self.assertEqual(self.svc.smart.config()["cleanEvery"], 80)
         self.assertEqual(self.svc.advice.saved()["suggestions"], [])
+
+
+class AlertsPage(SmartBase):
+    def test_page_lists_automatic_rules_and_whats_happening(self):
+        self.run_for(60, u_temperature=56)
+        page = self.svc.alerts_page()
+        self.assertEqual([r["kind"] for r in page["automatic"]], ["fire", "hot", "air", "clean", "flush", "sensor", "offline"])
+        self.assertIn("50 °C or more for 30 s", page["automatic"][0]["when"])
+        [now] = [x for x in page["now"] if x["tier"] == 3]
+        self.assertEqual((now["unit"], now["source"]), ("Urinal01", "automatic"))
+        self.assertEqual(self.svc.admin_overview()["activeAlerts"], 1)
+
+    def test_an_automatic_type_can_be_switched_off_but_not_fire(self):
+        self.svc.save_smart_settings(self.admin, {"kindsOff": ["air", "fire"]})
+        self.assertEqual(self.svc.smart.config()["kindsOff"], ["air"])
+        self.run_for(13 * 60, step=30, t_iaq=230)
+        self.assertEqual(self.smart_reports(), [])
+        self.assertFalse(next(r for r in self.svc.alerts_page()["automatic"] if r["kind"] == "air")["on"])
+
+    def test_suggested_alerts_trend_and_one_tap_add(self):
+        self.boards.vals["t"]["cubicleOccupied"] = False
+        self.svc.arduino._cache = None
+        page = self.svc.refresh_alert_ideas(self.admin)
+        by = {i["id"]: i for i in page["ideas"]}
+        idea = by["t:t-cubicleOccupied:on"]
+        self.assertEqual((idea["rule"]["level"], idea["rule"]["minutes"]), ("urgent", 20))
+        self.assertIn("may need help", idea["why"])
+        r = self.svc.add_alert_idea(self.admin, idea["id"])
+        self.assertEqual(r["rule"]["location"], "2nd Floor · Male")
+        self.assertNotIn(idea["id"], {i["id"] for i in self.svc.alerts_page()["ideas"]["ideas"]})   # added → gone
+        self.svc.dismiss_alert_idea(self.admin, "u:u-cubicleOccupied:on")
+        self.assertNotIn("u:u-cubicleOccupied:on", {i["id"] for i in self.svc.alert_ideas.view()["ideas"]})
+
+    def test_ai_ideas_are_checked(self):
+        self.svc.llm = FakeLlm({"ideas": [
+            {"thingId": "u", "propertyId": "u-humidity", "op": "above", "limit": 88, "minutes": 20, "level": "report",
+             "title": "Damp urinal area", "why": "p95 86%"},
+            {"thingId": "u", "propertyId": "u-humidity", "op": "above", "limit": 88, "level": "emergency", "title": "x"},   # no emergencies
+            {"thingId": "nope", "propertyId": "x", "op": "above", "limit": 1, "level": "report", "title": "made up"},   # not a real variable
+        ]})
+        page = self.svc.refresh_alert_ideas(self.admin)
+        ai = [i for i in page["ideas"] if i["source"] == "ai"]
+        self.assertEqual([(i["title"], i["rule"]["limit"]) for i in ai], [("Damp urinal area", 88)])

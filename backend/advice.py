@@ -100,7 +100,7 @@ class Advice:
     def facts(self) -> dict:
         smart = self.svc.smart
         cfg = smart.config()
-        now = datetime.now(LOCAL_TZ)
+        now = datetime.fromtimestamp(self.svc.smart.clock(), LOCAL_TZ)
         records = dataset(self.svc, 7)
         summary = summarize(records)
         open_jobs = [{"title": scrub(r.get("title", ""))[:80], "where": r.get("location") or "", "priority": r.get("priority"),
@@ -118,7 +118,7 @@ class Advice:
 
     # ------------------------------------------------------------------ fixed-rule advice (no AI)
     def rules(self, f: dict) -> dict:
-        now = datetime.now(LOCAL_TZ)
+        now = datetime.fromtimestamp(self.svc.smart.clock(), LOCAL_TZ)
         jan, adm, sug = [], [], []
         cfg = self.svc.smart.config()
         for u in f["units"]:
@@ -224,6 +224,11 @@ class Advice:
             self.run(actor, reason)
         except Exception:  # noqa: BLE001 - kept in last_error / job_status
             pass
+        if reason == "daily" and self.svc.arduino.configured:
+            try:
+                self.svc.alert_ideas.run(actor)   # new alert suggestions with the day's advice
+            except Exception:  # noqa: BLE001
+                pass
 
     def today(self, role: str) -> dict:
         """The day's advice for this role. Older than 20 hours (or none yet) → fixed-rule advice made now."""
@@ -246,7 +251,7 @@ class Advice:
     def tick(self) -> bool:
         """Once a day, when quiet hours end (5 AM): make the day's advice (AI when set up)."""
         cfg = self.svc.smart.config()
-        now = datetime.now(LOCAL_TZ)
+        now = datetime.fromtimestamp(self.svc.smart.clock(), LOCAL_TZ)
         day = now.strftime("%Y-%m-%d")
         if self.running or self._tried_day == day or now.hour < cfg["quietEnd"]:
             return False

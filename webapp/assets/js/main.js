@@ -12,6 +12,7 @@ import { initLock, isLocked, lockNow } from './lock.js';
 import { insightsView } from './insights.js';
 import { initKeyboard } from './keyboard.js';
 import { liveView } from './sensors.js';
+import { alertsView } from './alerts.js';
 
 const PUBLIC = new Set(['/login', '/join', '/activate', '/admin-invite', '/status']);
 
@@ -32,11 +33,13 @@ route('/jobs', jobsView);
 route('/report', reportProblemView);
 route('/sensors', sensorsView);
 route('/live', liveView);
+route('/alerts', alertsView);
 
 const ADMIN_NAV = [
   { path: '/home', label: 'Home', icon: 'home', tab: 'Home', also: ['/live'] },
   { group: 'Operations' },
   { path: '/reports', label: 'Reports', icon: 'reports', badge: 'reports', also: ['/charts', '/insights'], tab: 'Reports' },
+  { path: '/alerts', label: 'Alerts', icon: 'bell', badge: 'alerts', tab: 'Alerts' },
   { group: 'People' },
   { path: '/people', label: 'People', icon: 'people', badge: 'people', tab: 'People' },
   { group: 'System' },
@@ -132,7 +135,7 @@ async function render() {
   if (signedIn && (PUBLIC.has(pathname) || pathname === '/')) { go(home, { replace: true }); return; }
   const match = matchRoute(path);
   if (!match) { go(home, { replace: true }); return; }
-  if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/insights', '/people', '/system'].some((p) => pathname.startsWith(p))) {
+  if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/insights', '/people', '/system', '/alerts'].some((p) => pathname.startsWith(p))) {
     go('/sensors', { replace: true }); return;
   }
   if (signedIn && session.user.role === 'admin' && ['/jobs', '/report', '/sensors'].includes(pathname)) { go('/home', { replace: true }); return; }
@@ -182,6 +185,7 @@ async function poll() {
       const ov = await get('/admin/overview?cached=true');
       setBadge('reports', ov.openReports || '');
       setBadge('people', ov.pendingRequests || '', 'soft');
+      setBadge('alerts', ov.activeAlerts || '', 'alert');
       if (ticks % 4 === 1) {
         invalidate('health');
         const r = await healthPill(h('span'));

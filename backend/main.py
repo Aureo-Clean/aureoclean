@@ -157,6 +157,7 @@ class SensorAlertBody(BaseModel):
 class SmartSettingsBody(BaseModel):
     enabled: Optional[bool] = None
     units: Optional[dict] = None
+    kindsOff: Optional[list] = None
     values: dict = Field(default_factory=dict)
 
 
@@ -646,7 +647,25 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
             changes["enabled"] = body.enabled
         if body.units is not None:
             changes["units"] = body.units
+        if body.kindsOff is not None:
+            changes["kindsOff"] = body.kindsOff
         return svc().save_smart_settings(session, changes)
+
+    @app.get("/admin/alerts")
+    def alerts_page(_: Session = Depends(admin)):
+        return svc().alerts_page()
+
+    @app.post("/admin/alerts/ideas/refresh")
+    def alert_ideas_refresh(session: Session = Depends(admin)):
+        return svc().refresh_alert_ideas(session)
+
+    @app.post("/admin/alerts/ideas/{idea_id}/add")
+    def alert_idea_add(idea_id: str, session: Session = Depends(admin)):
+        return svc().add_alert_idea(session, idea_id[:200])
+
+    @app.post("/admin/alerts/ideas/{idea_id}/dismiss")
+    def alert_idea_dismiss(idea_id: str, session: Session = Depends(admin)):
+        return svc().dismiss_alert_idea(session, idea_id[:200])
 
     @app.get("/advice")
     def advice(session: Session = Depends(any_user)):

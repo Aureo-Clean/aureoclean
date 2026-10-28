@@ -156,12 +156,21 @@ Admins open Arduino Cloud and the Firebase Console from **System → Kiosk & web
 **Google Chrome** (install once with `./tools/install_chrome.sh`). In Chrome, turn on
 *Settings → On start-up → Continue where you left off* so websites keep you signed in after closing Chrome.
 
+### Alerts page (admins)
+
+**Alerts** in the menu shows everything that can raise a job or a text: *Happening now*, the **automatic
+alerts** (built in, each can be switched off except fire/heat; *Limits & units* sets the limits and each
+unit's restroom), **suggested alerts** (from the last 3 days of readings — e.g. a cubicle occupied 20+ min,
+damp air that keeps coming back, a blocked ToF sensor; the AI adds its own ideas when it's set up — tap
+**Add** and it becomes one of your alerts), **your alerts**, and the Arduino Cloud / SMS connection.
+New suggestions also come every morning with the day's advice.
+
 ### Smart monitoring (trends → jobs and texts) and today's advice
 
 Every ESP32 unit with the AureoClean variables (`temperature`, `iaq`, `iaqAccuracy`, `gasResistance`,
 `sensorStatus`, `totalToFUsers`/`totalUses`, `totalFlushes`, `flushThreshold` …) is watched by the Pi every
 5 seconds — fixed rules, no AI, no internet to the AI needed. Set each unit's restroom once:
-**Home → tap a unit → Smart settings** (or Live sensors → Full view → Smart settings).
+**Alerts → Limits & units** (or Home → tap a unit → Smart settings).
 
 | Trend | What happens |
 |---|---|
@@ -481,6 +490,7 @@ backend/
   sensor_alerts.py sensor limits → reports and texts (fixed rules, checked every 15 s)
   smart.py         smart monitoring: trends from the ESP32 units → jobs, texts, quiet hours
   advice.py        today's plan for janitors and admins (AI, or fixed rules without it)
+  alert_ideas.py   suggested alerts from the 3-day trends (and the AI), added with one tap
   llm.py           AI providers (Gemini, Claude, OpenAI-compatible / Ollama)
   insights.py      AI insights and questions (advice only), daily run
   report_ai.py     AI tips on reports, filling the report form, written period summaries

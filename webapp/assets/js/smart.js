@@ -179,6 +179,8 @@ const GROUPS = [
 const HOURS = Array.from({ length: 24 }, (_, hr) => [String(hr), hr === 0 ? '12 AM' : hr === 12 ? '12 PM' : hr < 12 ? `${hr} AM` : `${hr - 12} PM`]);
 
 export async function smartSettingsDialog() {
+  let done = () => {};
+  const finished = new Promise((r) => { done = r; });
   let s;
   try { s = await get('/admin/smart/settings'); } catch (err) { toast(err.message, 'error'); return; }
   modal((close) => {
@@ -209,7 +211,7 @@ export async function smartSettingsDialog() {
       try {
         const r = await post('/admin/smart/settings', { enabled, values,
           units: Object.fromEntries(units.map((x) => [x.u.id, { location: x.where.input.value, kind: x.kind.input.value, on: x.on }])) });
-        close(); toast(r.message, 'success');
+        close(); toast(r.message, 'success'); done();
       } catch (err) { say(msg, err.message, 'error'); }
     }));
     return [
@@ -226,5 +228,6 @@ export async function smartSettingsDialog() {
       msg,
       h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel'), save),
     ];
-  }, { wide: true });
+  }, { wide: true, onClose: () => done() });
+  return finished;
 }

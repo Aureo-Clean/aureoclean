@@ -67,6 +67,7 @@ from .report_ai import ReportAI
 from .sensor_alerts import SensorAlertError, SensorAlerts, suggest as suggest_sensor_alert
 from .smart import SETTINGS as SMART_SETTINGS, Smart
 from .advice import Advice
+from .alert_ideas import AlertIdeas
 from .llm import KeyRefused, LlmClient, LlmError, ModelGone
 from .mailer import Mailer, MailError
 from .sms import (
@@ -338,6 +339,7 @@ class AureoService:
         self.sensor_alerts = SensorAlerts(self, settings.sms_settings_file.with_name("sensor_alerts.json"))
         self.smart = Smart(self, settings.sms_settings_file.parent)
         self.advice = Advice(self)
+        self.alert_ideas = AlertIdeas(self)
         self._seen_at: dict[str, float] = {}   # uid → when lastSeenAt was last saved (for "active today")
         self._control_limit = _RateLimit(30, 60)   # dashboard controls: 30 changes a minute per person
         self._unlock_cache: dict[str, tuple[float, dict]] = {}  # uid -> (time, profile) for a fast lock screen
@@ -1214,6 +1216,63 @@ class AureoService:
             raise BadRequest(str(exc))
         self.audit("smart_settings", admin.actor, None, {k: (v if k != "units" else len(v)) for k, v in changes.items()})
         return {"config": cfg, "message": "Smart monitoring settings saved."}
+
+    # ------------------------------------------------------------------ the Alerts page
+    def alerts_page(self) -> dict:
+        cfg = self.smart.config()
+        ov = self.smart.overview()
+        custom = self.sensor_alerts.overview()
+        now = []
+        for u in ov["units"]:
+            for p in u["problems"]:
+                if p["tier"] >= 1 or p["active"]:
+                    now.append({"unit": u["name"], "where": u["location"] or u["name"], "title": p["title"], "tier": p["tier"],
+                                "tierText": p["tierText"], "ref": p["ref"], "reportId": p["reportId"], "active": p["active"],
+                                "for": p["for"], "source": "automatic"})
+        for r in custom["rules"]:
+            if r["on"] and r["state"] in ("alert", "over"):
+                now.append({"unit": r.get("thing") or "", "where": r.get("location") or r.get("thing") or "", "title": r["text"],
+                            "tier": {"report": 1, "urgent": 2, "emergency": 3}[r["level"]] if r["state"] == "alert" else 0,
+                            "tierText": "Alert sent" if r["state"] == "alert" else "Over the limit", "ref": (r.get("active") or {}).get("ref"),
+                            "reportId": (r.get("active") or {}).get("reportId"), "active": True, "for": "", "source": "yours",
+                            "why": r.get("why")})
+        now.sort(key=lambda x: (-x["tier"], not x["active"]))
+        return {"configured": self.arduino.configured, "enabled": cfg["enabled"], "quiet": ov["quiet"], "quietHours": ov["quietHours"],
+                "checker": ov["checker"], "customChecker": custom["checker"], "now": now, "units": ov["units"],
+                "automatic": self.smart.automatic_rules(cfg), "custom": custom, "ideas": self.alert_ideas.view(),
+                "smsMode": self.sms.mode}
+
+    def active_alert_count(self) -> int:
+        n = sum(1 for u in self.smart.units_seen.values() for p in u["problems"] if p["active"] and p["tier"] >= 1)
+        try:
+            n += sum(1 for r in self.sensor_alerts.overview()["rules"] if r["on"] and r["state"] == "alert")
+        except Exception:  # noqa: BLE001
+            pass
+        return n
+
+    def refresh_alert_ideas(self, admin: Session) -> dict:
+        if not self.arduino.configured:
+            raise BadRequest("Connect Arduino Cloud first.")
+        try:
+            return self.alert_ideas.run(admin.actor)
+        except ArduinoError as exc:
+            raise ServiceUnavailable(str(exc))
+
+    def add_alert_idea(self, admin: Session, idea_id: str) -> dict:
+        idea = self.alert_ideas.find(idea_id)
+        if idea is None:
+            raise NotFound("That suggestion is gone — find new suggestions.")
+        rule = dict(idea["rule"])
+        same = next((r for r in self.sensor_alerts.rules() if r["thingId"] == rule["thingId"] and r.get("location")), None)
+        unit_loc = (self.smart.config()["units"].get(rule["thingId"]) or {}).get("location")
+        rule["location"] = unit_loc or (same or {}).get("location") or ""
+        result = self.save_sensor_alert(admin, rule)
+        self.audit("alert_idea_added", admin.actor, result["rule"]["id"], {"idea": idea["title"], "source": idea["source"]})
+        return result
+
+    def dismiss_alert_idea(self, admin: Session, idea_id: str) -> dict:
+        self.alert_ideas.dismiss(idea_id)
+        return {"message": "Suggestion dismissed."}
 
     def advice_today(self, session: Session) -> dict:
         return self.advice.today(session.role)
@@ -2160,6 +2219,7 @@ class AureoService:
             "smsMode": self.sms.mode,
             "smsSubscribers": len(self.sms_recipients()),
             "openReports": sum(r.get("status") != "resolved" for _, r in self.store.query(self.C_REPORTS)),
+            "activeAlerts": self.active_alert_count(),
         }
 
     # ============================================================ janitor jobs

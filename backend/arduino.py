@@ -32,6 +32,8 @@ import requests
 API = "https://api2.arduino.cc"
 TOKEN_URL = f"{API}/iot/v1/clients/token"
 CACHE_SECONDS = 4          # several screens asking at once share one answer
+STALE_OK_SECONDS = 60      # older than CACHE_SECONDS: answer at once with the last values, refresh in the background
+THINGS_SECONDS = 60        # the list of things changes rarely
 LAYOUT_SECONDS = 60        # dashboards (pages and widgets) change rarely
 HISTORY_SECONDS = 180      # small charts: last few hours, refreshed every 3 minutes
 HISTORY_HOURS = 6
@@ -82,6 +84,10 @@ class ArduinoCloud:
         self._layout: Optional[tuple[float, list]] = None
         self._history: Optional[tuple[float, dict]] = None
         self._lock = threading.Lock()
+        self._fetch_lock = threading.Lock()
+        self._refreshing = False
+        self._things: Optional[tuple[float, list]] = None
+        self.last_error: Optional[str] = None
         self._history_lock = threading.Lock()
         self._series_cache: dict = {}
 
@@ -118,7 +124,7 @@ class ArduinoCloud:
             os.chmod(self.file, 0o600)
         except OSError:
             pass
-        self._token, self._cache, self._layout, self._history = None, None, None, None
+        self._token, self._cache, self._layout, self._history, self._things = None, None, None, None, None
 
     def set_options(self, janitors_control: bool) -> None:
         data = self._saved()
@@ -136,7 +142,7 @@ class ArduinoCloud:
             self.file.unlink()
         except OSError:
             pass
-        self._token, self._cache, self._layout, self._history = None, None, None, None
+        self._token, self._cache, self._layout, self._history, self._things = None, None, None, None, None
 
     # ------------------------------------------------------------------ API
     def _headers(self) -> dict:
@@ -325,30 +331,71 @@ class ArduinoCloud:
     def readings(self) -> dict:
         """{"things": [{"id", "name", "device", "properties": [...]}],
             "pages": [{"id", "name", "widgets": [{"id", "type", "name", "options", "values": [...]}]}],
-            "fetchedAt"} — shared for a few seconds between screens.
+            "fetchedAt"}.
+
+        Never makes a screen wait when there are recent values: answers at once with the last values
+        and refreshes them in the background (one fetch at a time, things read in parallel).
 
         "pages" are the pages of the Arduino dashboards (a single-page dashboard is one page named after
         the dashboard). Without any dashboard, there is one page per thing."""
-        with self._lock:
-            if self._cache and time.monotonic() - self._cache[0] < CACHE_SECONDS:
-                return self._cache[1]
-            things = []
-            for t in self._get("/iot/v2/things") or []:
-                props = self._get(f"/iot/v2/things/{t['id']}/properties") or []
-                things.append({
-                    "id": t.get("id"), "name": t.get("name") or "Thing",
-                    "device": (t.get("device_name") or (t.get("device") or {}).get("name")) if isinstance(t, dict) else None,
-                    "properties": sorted((self._value(p, t) for p in props), key=lambda x: x["label"].lower()),
-                })
-            pages = self._pages(self._dashboards(), things)
-            if not pages:
-                pages = [{"id": f"thing-{t['id']}", "name": t["name"], "dashboard": "", "dashboardId": None, "fromThing": True,
-                          "widgets": [{"id": v["id"], "type": "", "name": v["label"], "x": i % 4, "y": i // 4, "w": 1, "h": 1,
-                                       "options": {}, "values": [v]} for i, v in enumerate(t["properties"])]}
-                         for t in things if t["properties"]]
-            result = {"things": things, "pages": pages, "fetchedAt": time.time()}
-            self._cache = (time.monotonic(), result)
+        hit = self._cache
+        if hit:
+            age = time.monotonic() - hit[0]
+            if age < CACHE_SECONDS:
+                return hit[1]
+            if age < STALE_OK_SECONDS:
+                self._refresh_in_background()
+                return hit[1]
+        return self._fetch_now()
+
+    def _refresh_in_background(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+
+        def work():
+            try:
+                self._fetch_now()
+            except Exception as exc:  # noqa: BLE001 - the next caller sees it once the values are too old
+                self.last_error = str(exc)
+            finally:
+                self._refreshing = False
+        threading.Thread(target=work, daemon=True, name="arduino-refresh").start()
+
+    def _fetch_now(self) -> dict:
+        with self._fetch_lock:
+            hit = self._cache
+            if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+                return hit[1]
+            result = self._fetch()
+            with self._lock:
+                self._cache = (time.monotonic(), result)
+            self.last_error = None
             return result
+
+    def _thing_list(self) -> list:
+        if self._things and time.monotonic() - self._things[0] < THINGS_SECONDS:
+            return self._things[1]
+        things = [t for t in (self._get("/iot/v2/things") or []) if isinstance(t, dict)]
+        self._things = (time.monotonic(), things)
+        return things
+
+    def _fetch(self) -> dict:
+        raw = self._thing_list()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            props = list(pool.map(lambda t: self._get(f"/iot/v2/things/{t['id']}/properties") or [], raw))
+        things = [{
+            "id": t.get("id"), "name": t.get("name") or "Thing",
+            "device": t.get("device_name") or (t.get("device") or {}).get("name"),
+            "properties": sorted((self._value(p, t) for p in ps), key=lambda x: x["label"].lower()),
+        } for t, ps in zip(raw, props)]
+        pages = self._pages(self._dashboards(), things)
+        if not pages:
+            pages = [{"id": f"thing-{t['id']}", "name": t["name"], "dashboard": "", "dashboardId": None, "fromThing": True,
+                      "widgets": [{"id": v["id"], "type": "", "name": v["label"], "x": i % 4, "y": i // 4, "w": 1, "h": 1,
+                                   "options": {}, "values": [v]} for i, v in enumerate(t["properties"])]}
+                     for t in things if t["properties"]]
+        return {"things": things, "pages": pages, "fetchedAt": time.time()}
 
     def history(self) -> dict:
         """Recent values of the number variables shown on the pages, for the small charts:

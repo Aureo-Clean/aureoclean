@@ -189,7 +189,8 @@ class Smart:
     # ------------------------------------------------------------------ settings
     def config(self) -> dict:
         saved = self._load(self.config_file)
-        out = {"enabled": bool(saved.get("enabled", True)), "units": saved.get("units") or {}}
+        out = {"enabled": bool(saved.get("enabled", True)), "units": saved.get("units") or {},
+               "kindsOff": [k for k in saved.get("kindsOff") or [] if k in KINDS]}
         for k, (lo, hi, typ, default, _) in SETTINGS.items():
             v = saved.get(k, default)
             out[k] = typ(v) if _num(v) and lo <= v <= hi else default
@@ -201,6 +202,10 @@ class Smart:
             for k, v in changes.items():
                 if k == "enabled":
                     cfg["enabled"] = bool(v)
+                elif k == "kindsOff":
+                    if not isinstance(v, list):
+                        raise ValueError("kindsOff must be a list.")
+                    cfg["kindsOff"] = [x for x in KINDS if x in v and x != "fire"]   # fire can't be switched off
                 elif k == "units":
                     if not isinstance(v, dict):
                         raise ValueError("Units must be a list of restrooms.")
@@ -568,7 +573,7 @@ class Smart:
                     continue
                 ongoing = {k.split(":", 1)[1] for k, p in self.state["problems"].items() if k.startswith(unit["id"] + ":") and p.get("since")}
                 self._learn(unit, now, ongoing)
-                conds = self.detect(unit, cfg, now)
+                conds = [c for c in self.detect(unit, cfg, now) if c["kind"] not in cfg["kindsOff"]]
                 made += self._manage(unit, conds, cfg, now)
                 self.units_seen[unit["id"]] = self._snapshot(unit, cfg, now)
             if now - self._deferred_at >= 60:
@@ -800,6 +805,30 @@ class Smart:
                 "units": list(self.units_seen.values()),
                 "checker": {"running": alive, "every": CHECK_SECONDS, "error": self.last_error,
                             "ago": None if self.last_check is None else round(self.clock() - self.last_check)}}
+
+    @staticmethod
+    def automatic_rules(cfg: dict) -> list[dict]:
+        """The built-in alerts in plain words, with today's limits (for the Alerts page)."""
+        c = cfg
+        rules = [
+            ("fire", "Fire or extreme heat",
+             f"{fmt(c['fireTemp'], '°C')} or more for {c['fireSeconds']} s · up {fmt(c['riseDegrees'])} °C within 2 min "
+             f"(and at least {fmt(c['riseMinTemp'], '°C')}) · heat with suddenly bad air",
+             "Emergency report · texts everyone active today, at any hour", "red"),
+            ("hot", "Hot room", f"Above {fmt(c['hotTemp'], '°C')} for {c['hotMinutes']} min",
+             f"Job · still hot after {c['hotMinutes'] * 2} min → texts the janitors", "amber"),
+            ("air", "Bad air (odour)",
+             f"IAQ above {c['iaqBad']} for {c['airJobMinutes']} min (while the sensor warms up: gas reading {c['gasDropPercent']}% below normal)",
+             f"Job · after {c['airSmsMinutes']} min, or IAQ above {c['iaqVeryBad']} for 5 min → texts the janitors", "amber"),
+            ("clean", "Cleaning due", f"{c['cleanEvery']} uses since the last cleaning (ToF count)",
+             f"Job · at {int(c['cleanEvery'] * 1.5)} uses → texts the janitors", "blue"),
+            ("flush", "Auto-flush not working", f"{c['flushMissUses']} uses without a flush",
+             f"Job · {c['flushMissUses'] * 2} uses → texts the janitors", "blue"),
+            ("sensor", "Air sensor fault", "BME680 error for 5 min", "Job for the admins (no text)", ""),
+            ("offline", "Unit offline", f"No data for {c['offlineMinutes']} min", "Job for the admins (no text)", ""),
+        ]
+        return [{"kind": k, "title": ti, "when": w, "then": th, "color": col, "on": k not in c["kindsOff"],
+                 "canTurnOff": k != "fire"} for k, ti, w, th, col in rules]
 
     def problems_for_screens(self) -> dict:
         """{thing id: {variable name: tier}} so the dashboard tiles light up with smart problems too."""

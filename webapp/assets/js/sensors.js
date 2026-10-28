@@ -5,16 +5,17 @@
 // gentle animations; small charts show the last few hours.
 import { ago, busy, get, go, h, icon, modal, openExternal, post, session, shell, toast } from './core.js';
 import { field, message, say, switchEl } from './ui.js';
-import { STATE, alertEditor, alertsDialog, canAlert } from './sensor-alerts.js';
-import { smartSettingsDialog } from './smart.js';
+import { STATE, alertEditor, canAlert } from './sensor-alerts.js';
 
 const REFRESH_MS = 5000;
 const HISTORY_MS = 180000;
 const STALE_MS = 15 * 60000;
 const ALERT_WORDS = /(smoke|fire|leak|flood|alarm|emergency|gas|overflow|full|vandal|tamper)/i;
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const MOTION = !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-const CSS_D = !!(window.CSS && CSS.supports && CSS.supports('d', 'path("M0 0")'));
+// Motion is kept small: numbers count up briefly on phones and laptops; on the Pi (and with
+// "reduce motion") values just change. No looping animations — they slowed the Pi down.
+const motion = () => !document.documentElement.classList.contains('on-pi')
+  && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 let uid = 0;
 
 // Shared between the Home card and the full view, so switching is instant.
@@ -43,9 +44,9 @@ function tween(el, to, d = decimalsFor(to)) {
   const from = isNum(el._v) ? el._v : null;
   el._v = to;
   if (!isNum(to)) { el.textContent = '—'; return; }
-  if (from === null || !MOTION || from === to) { el.textContent = fmt(to, d); return; }
+  if (from === null || !motion() || from === to || !el.isConnected) { el.textContent = fmt(to, d); return; }
   const start = performance.now();
-  const dur = 650;
+  const dur = 350;
   cancelAnimationFrame(el._raf);
   const step = (now) => {
     const t = Math.min(1, (now - start) / dur);
@@ -56,8 +57,7 @@ function tween(el, to, d = decimalsFor(to)) {
 }
 
 function setPath(path, d) {
-  if (CSS_D && MOTION) path.style.d = `path("${d}")`;
-  else path.setAttribute('d', d);
+  if (path.getAttribute('d') !== d) path.setAttribute('d', d);
 }
 
 // Smooth line through points (x, y in 0..W, 0..H).
@@ -125,10 +125,7 @@ function whenText(v) {
   if (!v || !v.updatedAt) return 'no value yet';
   return isStale(v) ? `last seen ${ago(v.updatedAt)}` : ago(v.updatedAt);
 }
-function bump(el) {
-  if (!MOTION) return;
-  el.classList.remove('changed'); void el.offsetWidth; el.classList.add('changed');
-}
+function bump() { /* (the old "glow on change" forced a re-layout on every change; removed) */ }
 
 // ------------------------------------------------------------------ controls (switches, sliders …)
 // A change shows at once; it's kept for a few seconds so the next refresh doesn't snap it back
@@ -681,14 +678,12 @@ export function sensorsCard({ full = false } = {}) {
   const dot = h('span', { class: 'dot ok live' });
   const tabs = h('div', { class: 'seg pages', role: 'tablist', 'aria-label': 'Arduino dashboard pages' });
   const boards = h('div', { class: 'seg boards hidden', role: 'tablist', 'aria-label': 'Arduino dashboards' });
-  const ringFill = s('circle', { cx: 9, cy: 9, r: 7, class: 'cd', pathLength: 100 });
-  const countdown = s('svg', { viewBox: '0 0 18 18', class: 'countdown', 'aria-hidden': 'true' }, s('circle', { cx: 9, cy: 9, r: 7, class: 'cdt' }), ringFill);
   const updated = h('span', { class: 'updated small muted' });
   const expand = full ? null : h('button', { class: 'btn sm ghost', type: 'button', onclick: () => go('/live'), 'aria-label': 'Open full view' },
     icon('expand'), h('span', { class: 'hide-xs' }, 'Full view'));
   const head = h('div', { class: 'shead' }, back,
     h('div', { class: 'stitle' }, dot, h(full ? 'h1' : 'b', { class: full ? 'stitle-h' : '' }, 'Live sensors')), boards, tabs,
-    h('div', { class: 'sstatus' }, countdown, updated), expand);
+    h('div', { class: 'sstatus' }, updated), expand);
   const banner = h('div', { class: 'sbanner hidden', role: 'status' });
   const grid = h('div', { class: 'wgrid' });
   const body = h('div', { class: 'sbody' }, banner, grid);
@@ -746,11 +741,7 @@ export function sensorsCard({ full = false } = {}) {
     foot.replaceChildren(
       full && shell.isPi ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => shell.send('dashboard') }, icon('external'), 'Arduino\'s own dashboard') : null,
       session.user && session.user.role === 'admin' && configured
-        ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => alertsDialog(store.data, () => refresh()) }, icon('bell'), 'Sensor alerts', alertCount()) : null,
-      session.user && session.user.role === 'admin' && configured && full
-        ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => smartSettingsDialog() }, icon('settings'), 'Smart settings') : null,
-      session.user && session.user.role === 'admin' && configured && full
-        ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => connectDialog(() => refresh(), true) }, 'Arduino settings') : null);
+        ? h('a', { class: 'btn sm ghost', href: '#/alerts' }, icon('bell'), 'Alerts', alertCount()) : null);
   }
 
   function tick() {
@@ -759,9 +750,6 @@ export function sensorsCard({ full = false } = {}) {
     updated.textContent = store.error ? 'Retrying…' : secs < 3 ? 'Updated just now' : `Updated ${secs} s ago`;
   }
 
-  function restartCountdown() {
-    ringFill.classList.remove('run'); void ringFill.getBoundingClientRect(); ringFill.classList.add('run');
-  }
 
   function render(pageChanged = false) {
     const d = store.data;
@@ -796,14 +784,12 @@ export function sensorsCard({ full = false } = {}) {
         grid.replaceChildren(h('div', { class: 'empty' }, icon('sensors'), h('b', null, `Nothing on “${current.name}” yet`),
           h('span', null, 'Add widgets to this page in Arduino Cloud — they show up here within a minute.')));
       } else {
-        const els = current.widgets.map((w, i) => {
+        const els = current.widgets.map((w) => {
           const wd = makeWidget(w);
           built.widgets.set(w.id, wd);
-          wd.el.style.animationDelay = `${Math.min(i, 8) * 30}ms`;
           return wd.el;
         });
         grid.replaceChildren(...els);
-        grid.classList.remove('swap'); void grid.offsetWidth; grid.classList.add('swap');
       }
     }
     for (const w of current.widgets) {
@@ -815,7 +801,7 @@ export function sensorsCard({ full = false } = {}) {
   const onData = () => {
     if (!card.isConnected && card._seen) { stop(); return; }
     if (card.isConnected) card._seen = true;
-    render(); tick(); restartCountdown();
+    render(); tick();
   };
   function stop() { clearInterval(timer); clearInterval(card._tick); listeners.delete(onData); }
   listeners.add(onData);
@@ -837,7 +823,7 @@ export function liveView() {
 }
 
 // ------------------------------------------------------------------ connect (admin)
-function connectDialog(after, existing = false) {
+export function connectDialog(after, existing = false) {
   modal((close) => {
     const id = field('Client ID', { autocomplete: 'off' });
     const secret = field('Client Secret', { type: 'password', autocomplete: 'off', hint: 'Shown only once when you make the key — it\'s also in the PDF Arduino lets you download.' });
