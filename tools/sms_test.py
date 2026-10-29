@@ -44,6 +44,7 @@ class Modem:
 
     def __init__(self, ser):
         self.ser = ser
+        self.heard = ""      # everything the modem sent while we waited for OK (to spot garbled bytes)
 
     def read_until(self, tokens, timeout: float) -> str:
         buf, end = "", time.monotonic() + timeout
@@ -64,8 +65,10 @@ class Modem:
 
     def responds(self) -> bool:
         # SIM900A auto-detects the speed from the first "AT"s it receives.
-        for _ in range(3):
-            if "OK" in self.cmd("AT", timeout=1.0):
+        for _ in range(4):
+            reply = self.cmd("AT", timeout=1.0)
+            self.heard += reply
+            if "OK" in reply:
                 return True
         return False
 
@@ -101,6 +104,7 @@ def check_port(port: str) -> bool:
 
 def find_baud(port: str, preferred: int | None):
     step("2. Is the modem answering?")
+    heard_noise = False
     for baud in ([preferred] if preferred else []) + [b for b in BAUDS if b != preferred]:
         try:
             ser = open_serial(port, baud)
@@ -116,9 +120,17 @@ def find_baud(port: str, preferred: int | None):
             print("answered!")
             print(f"{OK} The modem answers at {baud} baud.")
             return modem, baud
-        print("no answer")
+        junk = modem.heard.strip("\x00\r\n ")
+        print(f"no answer (but got {len(junk)} unreadable bytes: {junk[:20]!r})" if junk else "no answer (silence)")
+        if junk:
+            heard_noise = True
         ser.close()
-    print(f"{BAD} The modem didn't answer at any speed. Check, in this order:")
+    if heard_noise:
+        print(f"{BAD} The modem sends bytes, but they're unreadable at every speed. That means the wires reach the")
+        print("   Pi, but: GND isn't shared (modem GND → Pi pin 6), or the modem's TX is a 5 V signal —")
+        print("   use the 3VT pin, or a voltage divider (modem TX → 1 kΩ → Pi pin 10, and 2 kΩ from pin 10 to GND).")
+        return None, None
+    print(f"{BAD} The modem didn't answer at any speed (silence). Check, in this order:")
     print("   • Power: is the modem's LED on? It needs its own 5 V supply that can give 2 A")
     print("     (NOT the Pi's 3.3 V pin). Some boards need the PWR/power key held ~2 s to start.")
     print("   • Ground: modem GND must be connected to a Pi GND pin.")

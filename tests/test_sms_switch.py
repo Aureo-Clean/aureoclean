@@ -65,8 +65,25 @@ class Detection(unittest.TestCase):
     def test_nothing_answers(self):
         ports = FakePorts()
         with self.assertRaises(SmsError) as ctx:
-            detect_modem(ports=("/dev/ttyUSB0",), bauds=(9600,), opener=ports.opener, exists=ports.exists)
-        self.assertIn("didn't answer", str(ctx.exception))
+            detect_modem(ports=("/dev/ttyUSB0",), bauds=(9600,), opener=ports.opener, exists=ports.exists, console=lambda: None)
+        self.assertIn("nothing came back at all", str(ctx.exception))
+
+    def test_garbled_bytes_point_to_ground_or_5v(self):
+        class Noisy(_Silent):
+            in_waiting = 3
+
+            def read(self, n=1):
+                return b"\xf8\x80\xfe"
+        with self.assertRaises(SmsError) as ctx:
+            detect_modem(ports=("/dev/ttyS0",), bauds=(9600,), opener=lambda p, b: Noisy(), exists=lambda p: True,
+                         console=lambda: None)
+        self.assertIn("unreadable at every speed", str(ctx.exception))
+
+    def test_serial_console_still_on(self):
+        with self.assertRaises(SmsError) as ctx:
+            detect_modem(ports=("/dev/ttyS0",), bauds=(9600,), opener=lambda p, b: _Silent(), exists=lambda p: True,
+                         console=lambda: "/boot/firmware/cmdline.txt")
+        self.assertIn("serial login console is still switched on", str(ctx.exception))
 
     def test_no_serial_port(self):
         with self.assertRaises(SmsError) as ctx:

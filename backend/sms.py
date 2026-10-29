@@ -23,7 +23,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Optional, Protocol
 
 log = logging.getLogger("aureoclean.sms")
 
@@ -152,7 +152,7 @@ MODEM_LOCK = threading.RLock()
 
 # Where a SIM900A / USB modem usually appears on a Raspberry Pi.
 CANDIDATE_PORTS = ("/dev/serial0", "/dev/ttyAMA0", "/dev/ttyS0", "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0")
-CANDIDATE_BAUDS = (9600, 115200, 57600, 38400, 19200)
+CANDIDATE_BAUDS = (9600, 115200, 57600, 38400, 19200, 4800)
 
 
 def open_port(port: str, baud: int):
@@ -163,6 +163,8 @@ def open_port(port: str, baud: int):
     try:
         return serial.Serial(port, baud, timeout=0.3, write_timeout=5)
     except (serial.SerialException, OSError) as exc:
+        if "permission denied" in str(exc).lower() or getattr(exc, "errno", None) == 13:
+            raise SmsError(f"No permission to use {port}. Run: sudo usermod -aG dialout $USER — then reboot the Pi.") from exc
         if "busy" in str(exc).lower():
             raise SmsError(f"{port} is busy: another program (e.g. tools/sms_test.py) is using the modem.") from exc
         raise SmsError(f"Cannot open the SMS modem on {port}. Is it connected and is the serial port enabled?") from exc
@@ -309,12 +311,36 @@ class ModemSender:
         }
 
 
-def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exists=os.path.exists) -> dict:
+def serial_console_on(files=("/boot/firmware/cmdline.txt", "/boot/cmdline.txt")) -> Optional[str]:
+    """The Pi's serial login console still uses the UART (it swallows the modem's answers)? → the file that says so."""
+    for f in files:
+        try:
+            if re.search(r"console=(serial0|ttyS0|ttyAMA0)\b", Path(f).read_text()):
+                return f
+        except OSError:
+            continue
+    return None
+
+
+def _wake(ser) -> bytes:
+    """A SIM900A that was just powered, or set to auto-baud, needs a few "AT"s before it answers."""
+    heard = b""
+    for _ in range(3):
+        ser.write(b"AT\r")
+        time.sleep(0.25)
+        heard += ser.read(ser.in_waiting or 0) or b""
+    return heard
+
+
+def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exists=os.path.exists,
+                 console=serial_console_on) -> dict:
     """Find the modem: try each serial port and speed until it answers "OK".
 
-    Returns {"port", "baud", "model"}; raises SmsError with advice if nothing answers."""
+    Returns {"port", "baud", "model"}; raises SmsError with advice for what went wrong:
+    no port, the serial console still on, garbled bytes (wrong level/ground), or silence."""
     opener = opener or open_port
     seen, tried, errors = set(), [], []
+    garbled: dict[str, int] = {}
     with MODEM_LOCK:
         for port in ports:
             if not exists(port):
@@ -330,14 +356,24 @@ def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exis
                     errors.append(str(exc))
                     break
                 try:
+                    noise = _wake(ser)
                     sender = ModemSender(port, baud, opener=lambda *_, s=ser: s)
                     for _ in range(3):
                         try:
                             sender._cmd(ser, "AT", timeout=1.0)
-                            info = sender._cmd(ser, "ATI").replace("OK", "").strip()
+                            try:
+                                info = sender._cmd(ser, "ATI").replace("OK", "").strip()
+                            except SmsError:
+                                info = ""
+                            log.info("Modem found on %s at %d baud", port, baud)
                             return {"port": port, "baud": baud, "model": info or "GSM modem"}
-                        except SmsError:
+                        except SmsError as exc:
+                            got = str(exc).split("reply: ", 1)[-1].rstrip(").") if "reply: " in str(exc) else ""
+                            if got and got != "nothing":
+                                noise += got.encode(errors="replace")
                             continue
+                    if noise.strip(b"\x00\r\n "):
+                        garbled[port] = garbled.get(port, 0) + len(noise)
                 finally:
                     ser.close()
                 tried.append(f"{port}@{baud}")
@@ -346,10 +382,21 @@ def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exis
     if not seen:
         raise SmsError("No serial port found. Enable it: sudo raspi-config → Interface Options → Serial Port "
                        "(login shell: No, hardware: Yes), then reboot.")
-    raise SmsError("The modem didn't answer on any port or speed. Check: the modem has its own 5 V 2 A supply and "
-                   "is switched on (power LED on, NET LED blinking — press its PWR key if not), its GND is joined to a Pi GND "
-                   "pin, the modem's TX goes to Pi pin 10 and its RX to Pi pin 8 (use the 3VT/3VR pins if the board has "
-                   "them; swap TX/RX if unsure). Never connect the modem's power to the Pi.")
+    cmdline = console() if console else None
+    if cmdline:
+        raise SmsError(f"The Pi's serial login console is still switched on ({cmdline}), so it takes the modem's "
+                       "answers. Run sudo raspi-config → Interface Options → Serial Port → login shell: No, "
+                       "serial hardware: Yes, then reboot and try again.")
+    if garbled:
+        port = max(garbled, key=garbled.get)
+        raise SmsError(f"The modem is sending something on {port}, but it's unreadable at every speed. Usually: the "
+                       "modem's GND isn't joined to a Pi GND pin, or its TX is a 5 V signal — use the 3VT pin, or "
+                       "a 1 kΩ/2 kΩ voltage divider into Pi pin 10.")
+    raise SmsError("The modem didn't answer on any port or speed — nothing came back at all. Check: the modem has its "
+                   "own 5 V 2 A supply and is switched on (power LED on, NET LED blinking — hold its PWR key ~2 s if "
+                   "not), its GND is joined to a Pi GND pin (e.g. pin 6), the modem's TX goes to Pi pin 10 and its RX "
+                   "to Pi pin 8 (use the 3VT/3VR pins if the board has them; try swapping TX/RX). Never connect the "
+                   "modem's power to the Pi.")
 
 
 class SavedSmsSettings:
