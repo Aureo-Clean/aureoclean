@@ -346,8 +346,10 @@ def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exis
     if not seen:
         raise SmsError("No serial port found. Enable it: sudo raspi-config → Interface Options → Serial Port "
                        "(login shell: No, hardware: Yes), then reboot.")
-    raise SmsError("The modem didn't answer on any port or speed. Check: power LED on, GND shared with the Pi, "
-                   "SIMT→Pi pin 10 and SIMR→Pi pin 8 (swap them if unsure), VCC_MCU→Pi 3.3 V.")
+    raise SmsError("The modem didn't answer on any port or speed. Check: the modem has its own 5 V 2 A supply and "
+                   "is switched on (power LED on, NET LED blinking — press its PWR key if not), its GND is joined to a Pi GND "
+                   "pin, the modem's TX goes to Pi pin 10 and its RX to Pi pin 8 (use the 3VT/3VR pins if the board has "
+                   "them; swap TX/RX if unsure). Never connect the modem's power to the Pi.")
 
 
 class SavedSmsSettings:
