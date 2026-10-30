@@ -192,7 +192,7 @@ class Advice:
                 try:
                     user = (f"Facts (JSON):\n{json.dumps(f, ensure_ascii=False, default=str)[:24000]}\n\n"
                             f"Answer with JSON in this format:\n{json.dumps(FORMAT)}")
-                    text = self.svc.llm.ask(SYSTEM, user, max_tokens=8192)
+                    text = self.svc.llm.ask(SYSTEM, user, max_tokens=4096, fast=True)
                     result = clean(parse_json(text), cfg)
                     if not result["janitor"] and not result["admin"]:
                         result, note = None, "The AI gave no usable advice, so fixed rules were used."

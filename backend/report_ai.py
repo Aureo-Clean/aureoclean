@@ -159,7 +159,7 @@ class ReportAI:
         user = {"task": "Help the janitor handle this report.", "report": report,
                 "similarPastReports": self._similar(report_id, r), "sensors": sensor_context(self.service),
                 "helpers": list(HELPERS), "answerFormat": TIP_FORMAT}
-        text = self.llm.ask(TIP_SYSTEM, json.dumps(user, ensure_ascii=False, default=str), max_tokens=4096)
+        text = self.llm.ask(TIP_SYSTEM, json.dumps(user, ensure_ascii=False, default=str), max_tokens=2048, fast=True)
         tip = {**clean_tip(parse_json(text)), "at": datetime.now(timezone.utc).isoformat(),
                "model": self.llm.settings()["model"], "auto": auto}
         if not tip["summary"] and not tip["steps"]:
@@ -233,7 +233,7 @@ class ReportAI:
         cats = [c for c in schema()["categories"] if c != "emergency"]
         user = {"description": scrub(text), "restrooms": [{"code": loc["code"], "name": loc["name"]} for loc in locations],
                 "issueCodes": issues, "categories": cats, "answerFormat": FILL_FORMAT}
-        d = parse_json(self.llm.ask(FILL_SYSTEM, json.dumps(user, ensure_ascii=False), max_tokens=2048)) or {}
+        d = parse_json(self.llm.ask(FILL_SYSTEM, json.dumps(user, ensure_ascii=False), max_tokens=1024, fast=True)) or {}
         known = issue_map()
         codes = [c for c in (d.get("issues") or []) if isinstance(c, str) and c in known and c != "emergency"]
         loc = next((x for x in locations if x["code"] == d.get("locationCode")), None)

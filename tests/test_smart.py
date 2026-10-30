@@ -306,7 +306,7 @@ class FakeLlm:
         self.answer = answer
         self.prompts = []
 
-    def ask(self, system, user, max_tokens=0):
+    def ask(self, system, user, max_tokens=0, fast=False):
         self.prompts.append(user)
         return json.dumps(self.answer)
 

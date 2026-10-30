@@ -1022,7 +1022,7 @@ class AureoService:
         except LlmError as exc:
             raise BadRequest(str(exc))
         try:
-            reply = self.llm.ask("Reply with JSON only.", 'Reply exactly with {"ok": true}', max_tokens=1024)
+            reply = self.llm.ask("Reply with JSON only.", 'Reply exactly with {"ok": true}', max_tokens=256, fast=True)
         except (KeyRefused, ModelGone) as exc:
             put_back()            # the key or model really is wrong: don't keep it
             raise BadRequest(str(exc))
@@ -1168,7 +1168,8 @@ class AureoService:
                 history = []
         # The restroom used by another alert on the same thing is a good guess.
         same = next((r for r in self.sensor_alerts.rules() if r["thingId"] == thing_id and r.get("location")), None)
-        return {**suggest_sensor_alert(prop, history), "location": same["location"] if same else "",
+        unit_loc = (self.smart.config()["units"].get(thing_id) or {}).get("location")
+        return {**suggest_sensor_alert(prop, history), "location": unit_loc or (same["location"] if same else ""),
                 "label": prop["label"], "unit": prop.get("unit", "")}
 
     # ------------------------------------------------------------------ smart monitoring + daily advice

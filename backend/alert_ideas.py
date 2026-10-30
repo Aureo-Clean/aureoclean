@@ -143,7 +143,7 @@ class AlertIdeas:
                 f"{json.dumps(existing)}\n\nAnswer as JSON: {{\"ideas\": [{{\"thingId\": \"\", \"propertyId\": \"\", \"op\": \"above\", "
                 f"\"limit\": 0, \"minutes\": 10, \"level\": \"report\", \"title\": \"\", \"why\": \"\"}}]}}")
         try:
-            parsed = parse_json(self.svc.llm.ask(SYSTEM, user, max_tokens=6000)) or {}
+            parsed = parse_json(self.svc.llm.ask(SYSTEM, user, max_tokens=3000, fast=True)) or {}
         except LlmError as exc:
             return [], f"AI unavailable ({exc}); only trend ideas are shown."
         by = {(s["thingId"], s["propertyId"]): s for s in stats}

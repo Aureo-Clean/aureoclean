@@ -20,19 +20,26 @@ sudo apt-get install -y python3-venv python3-pip libxcb-cursor0 libxkbcommon-x11
 echo "-- Creating Python virtual environment in .venv"
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
+# PySide6 separately: if pip has no build for this Pi, Raspberry Pi OS's own packages are used below.
+grep -v '^PySide6' requirements.txt > /tmp/aureoclean-req.txt
+.venv/bin/pip install --prefer-binary "$(grep '^PySide6' requirements.txt)" \
+  || echo "   (pip has no PySide6 for this Pi — Raspberry Pi OS's packages will be used.)"
+if ! .venv/bin/pip install --prefer-binary -r /tmp/aureoclean-req.txt; then
+  echo
+  echo "!! Installing the Python packages failed (see the lines above)."
+  echo "   Check the internet connection and run ./setup_pi.sh again."
+  echo "   If it fails the same way twice, send the last 20 lines to your developer."
+  exit 1
+fi
 sha256sum requirements.txt | cut -d' ' -f1 > .venv/.requirements-hash
 
 echo "-- Google Chrome (opens Arduino Cloud / Firebase links)"
 ./tools/install_chrome.sh || true
 
-echo "-- In-app dashboard viewer (Qt WebEngine)"
-PYSIDE_VER="$(.venv/bin/python -c 'import importlib.metadata as m; print(m.version("PySide6"))')"
-if .venv/bin/pip install "PySide6-Addons[webengine]==$PYSIDE_VER" >/dev/null 2>&1 \
-   && .venv/bin/python -c "import PySide6.QtWebEngineWidgets" 2>/dev/null; then
-  echo "   Installed: the Arduino dashboard shows inside AureoClean."
-else
-  echo "   WARNING: couldn't install it. The Dashboard tab needs it - tell your developer."
+echo "-- The app's screens (Qt WebEngine)"
+if ! ./tools/ensure_webengine.sh; then
+  echo "   Run ./setup_pi.sh again with internet. If it still fails, send the lines above to your developer."
+  exit 1
 fi
 
 echo "-- Preparing $CONFIG_DIR"
@@ -64,10 +71,9 @@ chmod +x run_local.sh tools/*.sh
 cat <<EOF
 
 Setup finished. Next:
-  1. Edit $ENV_FILE  (Web API key, mode)
+  1. (Optional) Edit $ENV_FILE — it starts in LOCAL mode: everything is
+     stored on this Pi, no Firebase needed. SMS works in both modes.
   2. Create the first admin:   .venv/bin/python tools/create_admin.py
-     (or, for an email that already has a Firebase account:
-                               .venv/bin/python tools/create_admin.py --link-existing)
   3. Start the app:            ./run_local.sh
   4. Desktop icons:            ./tools/install_launcher.sh
      (adds "AureoClean" and "Update AureoClean")

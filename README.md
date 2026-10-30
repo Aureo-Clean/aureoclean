@@ -50,28 +50,28 @@ physical access to the Pi and its service-account key, so that is the trust root
 
 ## Setup on the Raspberry Pi
 
-Use **Raspberry Pi OS 64-bit** (PySide6 needs aarch64).
+Use **Raspberry Pi OS 64-bit** (Bookworm or Trixie). Check with `uname -m` → `aarch64`.
 
 ```bash
-cd ~/aureoclean            # wherever you unzipped it
+sudo apt update && sudo apt install -y git
+cd ~
+git clone https://github.com/Aureo-Clean/aureoclean.git
+cd aureoclean
 ./setup_pi.sh
 ```
 
-That creates `.venv`, installs everything, and creates the config file
-`~/.config/aureoclean/aureoclean.env`. Open it and fill in:
+`setup_pi.sh` installs everything, including **Qt WebEngine**, which the app's screens need. If pip has no
+PySide6/WebEngine build for your Pi, it uses Raspberry Pi OS's own packages instead. If WebEngine still
+can't be installed it stops with a message — without it the app could only show its old classic screens
+(and it says so in a pop-up if that ever happens).
 
-```
-AUREOCLEAN_MODE=firebase
-AUREOCLEAN_FIREBASE_PROJECT_ID=aureoclean-b7c2b
-AUREOCLEAN_FIREBASE_WEB_API_KEY=<Firebase Console → Project settings → General → Web API key>
-GOOGLE_APPLICATION_CREDENTIALS=~/.config/aureoclean/service-account.json
-```
+The settings file `~/.config/aureoclean/aureoclean.env` starts in **local mode**: accounts and reports are
+stored on the Pi (SQLite) — fast and works offline. SMS, sensors, smart alerts and the AI work the same.
+(Firebase mode is still there: set `AUREOCLEAN_MODE=firebase` and fill in the Firebase lines and the
+service-account key. In local mode the public QR report page and the website sign-up can't reach the Pi.)
 
-Put the service-account key at `~/.config/aureoclean/service-account.json`
-(never inside the app folder, never in a ZIP).
-
-In the Firebase Console make sure **Authentication → Sign-in method → Email/Password**
-is enabled, and merge `firestore.rules` into your Firestore rules.
+Turn on the serial port for the SMS modem: `sudo raspi-config` → *Interface Options* → *Serial Port* →
+login shell **No**, serial hardware **Yes** → reboot.
 
 ### Create the first admin
 

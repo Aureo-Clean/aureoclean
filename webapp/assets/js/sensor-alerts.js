@@ -2,7 +2,7 @@
 // The Pi checks the limits every 15 seconds with fixed rules (no AI) and makes a report
 // and texts through the same rules as every other report.
 import { busy, confirmBox, get, h, icon, modal, post, toast } from './core.js';
-import { field, message, say, select, switchEl } from './ui.js';
+import { message, say, switchEl } from './ui.js';
 
 const MINUTES = [[0, 'Right away'], [1, '1 minute'], [2, '2 minutes'], [3, '3 minutes'], [5, '5 minutes'], [10, '10 minutes'],
   [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']];
@@ -39,86 +39,199 @@ function previewText(label, op, limit, unit, level, location) {
   return `AureoClean ${tag} #${ref}: ${title}${location ? ` at ${location}` : ''}${lim}. Reply OK ${ref} or DONE ${ref}`.replace(/°/g, '').replace(/·/g, '-');
 }
 
-/** Make or change the alert on one sensor value. v = the live value ({id, thingId, label, unit, value, type, thing}). */
-export async function alertEditor(v, existing = null, after = () => {}) {
-  let info; let tip = null;
-  try {
-    [info, tip] = await Promise.all([get('/admin/sensor-alerts'),
-      existing ? null : get(`/admin/sensor-alerts/suggest?thingId=${encodeURIComponent(v.thingId)}&propertyId=${encodeURIComponent(v.id)}`, { timeout: 30000 })]);
-  } catch (err) { toast(err.message, 'error'); return; }
-  const rule = existing || { op: tip.op, limit: tip.limit, level: tip.level, minutes: tip.minutes, location: tip.location, label: tip.label, on: true };
-  const bool = isBoolValue(v);
+// ------------------------------------------------------------------ quick templates
+// What admins usually want to watch, matched to the board's variables by name.
+export const TEMPLATES = [
+  { id: 'hot', icon: 'pulse', title: 'Too hot', about: 'Fan or aircon problem, or something burning', match: /temp/i, op: 'above', limit: 35, minutes: 5, level: 'urgent' },
+  { id: 'air', icon: 'sparkle', title: 'Bad smell / air', about: 'Air quality index stays bad', match: /^iaq$/i, op: 'above', limit: 150, minutes: 10, level: 'urgent' },
+  { id: 'gas', icon: 'sparkle', title: 'Bad smell (raw gas)', about: 'Gas reading drops far below normal', match: /gasresistance/i, op: 'below', limit: null, minutes: 10, level: 'urgent' },
+  { id: 'damp', icon: 'sensors', title: 'Damp / wet floor', about: 'Humidity stays very high', match: /humid/i, op: 'above', limit: 85, minutes: 15, level: 'report' },
+  { id: 'inside', icon: 'people', title: 'Someone inside too long', about: 'May need help (fainted, injured)', match: /occupied/i, op: 'on', limit: null, minutes: 20, level: 'urgent' },
+  { id: 'blocked', icon: 'x', title: 'Sensor blocked', about: 'ToF distance stuck very low — uses not counted', match: /tof|distance/i, op: 'below', limit: 3, minutes: 30, level: 'report' },
+];
+const WHO = [['report', 'Make a job', 'No text'], ['urgent', 'Text the janitors', 'Admins after 10 min'], ['emergency', 'Emergency', 'Text everyone now']];
+const SVGNS = 'http://www.w3.org/2000/svg';
+const sv = (tag, attrs = {}) => { const el = document.createElementNS(SVGNS, tag); for (const [k, x] of Object.entries(attrs)) el.setAttribute(k, String(x)); return el; };
+
+/** How often a rule would have fired on these points ([[unix s, value], …]). */
+export function wouldHaveFired(points, op, limit, minutes) {
+  if (points.length < 2) return null;
+  const over = (x) => (op === 'above' ? x > limit : op === 'below' ? x < limit : op === 'on' ? x > 0.5 : x <= 0.5);
+  const step = (points[points.length - 1][0] - points[0][0]) / (points.length - 1);
+  let runs = 0; let longest = 0; let start = null;
+  const close = (end) => { const d = end - start + step; if (d >= minutes * 60) { runs += 1; longest = Math.max(longest, d); } start = null; };
+  for (const [t, x] of points) { if (over(x)) { if (start === null) start = t; } else if (start !== null) close(t - step); }
+  if (start !== null) close(points[points.length - 1][0]);
+  return { times: runs, longestMin: Math.round(longest / 60) };
+}
+
+/** The alert builder: pick a template (or a value), then fill in one sentence while the chart shows
+ *  where the limit sits. v = a live value, or null to start from the templates.
+ *  values = every value that can have an alert (for the templates' unit picker). */
+export async function alertEditor(v, existing = null, after = () => {}, values = null) {
+  let info;
+  try { info = await get('/admin/sensor-alerts'); } catch (err) { toast(err.message, 'error'); return; }
   modal((close) => {
-    let op = rule.op; let level = rule.level; let on = rule.on !== false;
-    const unit = v.unit || '';
-    const name = field('Name in reports and texts', { value: rule.label || v.label, max: 60,
-      hint: bool ? '' : 'e.g. "Air quality" for a BME680 gas reading.' });
-    const opSeg = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Alert when' }, (bool ? ['on', 'off'] : ['above', 'below']).map((o) => {
-      const b = h('button', { type: 'button', role: 'tab', 'aria-selected': String(o === op) }, bool ? (o === 'on' ? 'Turns on' : 'Turns off') : (o === 'above' ? 'Goes above' : 'Goes below'));
-      b.addEventListener('click', () => { op = o; opSeg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-selected', String(x === b))); preview(); });
-      return b;
-    }));
-    const limit = h('input', { class: 'input num', type: 'number', inputmode: 'decimal', step: 'any', value: isNum(rule.limit) ? rule.limit : '',
-      'aria-label': 'Limit', style: { width: '140px' } });
-    const minutes = select('For at least', MINUTES.map(([m, t]) => [String(m), t]), String(rule.minutes ?? 2));
-    const where = select('Restroom', [['', 'Not set'], ...info.locations.map((l) => [l.name, l.name])], rule.location || '');
-    const cards = h('div', { class: 'alert-levels', role: 'radiogroup', 'aria-label': 'What happens' }, LEVELS.map(([code, title, about, color]) => {
-      const b = h('button', { type: 'button', role: 'radio', class: `alert-level ${color}`, 'aria-checked': String(code === level) },
-        h('b', null, title), h('span', null, about));
-      b.addEventListener('click', () => { level = code; cards.querySelectorAll('.alert-level').forEach((x) => x.setAttribute('aria-checked', String(x === b))); preview(); });
-      return b;
-    }));
-    const onSwitch = switchEl(on, (x) => { on = x; }, 'Alert is on');
-    const sample = h('div', { class: 'sms-preview' });
-    const msg = message();
-    function preview() {
-      sample.textContent = level === 'report' ? 'No text for "Report only" — the report shows in Reports and My jobs.'
-        : previewText(name.input.value.trim() || v.label, op, Number(limit.value), unit, level, where.input.value);
-      limitRow.classList.toggle('hidden', bool);
-    }
-    [name.input, limit].forEach((x) => x.addEventListener('input', preview));
-    where.input.addEventListener('change', preview);
-    const limitRow = h('div', { class: 'field' }, h('label', null, 'Limit'),
-      h('div', { class: 'row', style: { gap: '8px' } }, limit, h('span', { class: 'muted' }, unit),
-        h('div', { class: 'grow' }), h('span', { class: 'small muted' }, `Now: ${show(v.value, unit)}`)));
-    const save = h('button', { class: 'btn primary', type: 'button' }, existing ? 'Save' : 'Turn on alert');
-    save.addEventListener('click', () => busy(save, 'Saving…', async () => {
-      if (!bool && (limit.value === '' || !Number.isFinite(Number(limit.value)))) { say(msg, 'Type the limit as a number.', 'error'); limit.focus(); return; }
-      try {
-        const r = await post('/admin/sensor-alerts', {
-          id: existing ? existing.id : '', thingId: v.thingId, propertyId: v.id, label: name.input.value.trim(),
-          op, limit: bool ? null : Number(limit.value), level, minutes: Number(minutes.input.value), location: where.input.value, on,
-        });
-        close(); toast(r.message, 'success'); after();
-      } catch (err) { say(msg, err.message, 'error'); }
-    }));
-    const del = existing ? h('button', { class: 'btn danger left', type: 'button' }, 'Delete') : null;
-    const test = existing ? h('button', { class: 'btn ghost', type: 'button', title: 'Make a TEST report and texts now' }, 'Send test alert') : null;
-    if (test) test.addEventListener('click', () => testAlert({ ...existing, text: existing.text || v.label }, test));
-    if (del) {
-      del.addEventListener('click', async () => {
-        if (!(await confirmBox('Delete this alert?', 'The sensor stays on the dashboard; it just won\'t make reports or texts any more.', { ok: 'Delete', danger: true }))) return;
-        try { await post(`/admin/sensor-alerts/${encodeURIComponent(existing.id)}/delete`); close(); toast('Alert deleted.'); after(); }
-        catch (err) { say(msg, err.message, 'error'); }
+    const body = h('div', { class: 'ab' });
+    const pickStep = () => {
+      const all = values || (v ? [v] : []);
+      const cards = TEMPLATES.map((tp) => {
+        const fits = all.filter((x) => tp.match.test(x.name || ''));
+        const b = h('button', { class: 'ab-tpl', type: 'button', disabled: !fits.length },
+          icon(tp.icon), h('div', { class: 'grow' }, h('b', null, tp.title), h('span', null, fits.length ? tp.about : 'No matching sensor')));
+        b.addEventListener('click', () => (fits.length === 1 ? build(fits[0], null, tp) : unitStep(tp, fits)));
+        return b;
       });
+      const custom = h('select', { class: 'input', 'aria-label': 'Any sensor value' }, h('option', { value: '' }, 'Or any sensor value…'),
+        all.map((x) => h('option', { value: x.id }, `${x.thing} · ${x.label} (now ${show(x.value, x.unit)})`)));
+      custom.addEventListener('change', () => { const x = all.find((y) => y.id === custom.value); if (x) build(x, null, null); });
+      body.replaceChildren(h('h2', null, 'New alert'), h('p', { class: 'small muted' }, 'What should the Pi watch for?'),
+        h('div', { class: 'ab-tpls' }, cards), custom,
+        h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel')));
+    };
+    const unitStep = (tp, fits) => {
+      body.replaceChildren(h('h2', null, tp.title), h('p', { class: 'small muted' }, 'Which unit?'),
+        h('div', { class: 'ab-units' }, fits.map((x) => h('button', { class: 'ab-unit', type: 'button', onclick: () => build(x, null, tp) },
+          h('b', null, x.thing), h('span', null, `${x.label} · now ${show(x.value, x.unit)}`)))),
+        h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: pickStep }, icon('back'), 'Back')));
+    };
+    const build = async (val, rule, tp) => {
+      body.replaceChildren(h('div', { class: 'small muted' }, 'Loading the last 24 hours…'));
+      let tip = null; let series = [];
+      try {
+        [tip, series] = await Promise.all([
+          rule ? null : get(`/admin/sensor-alerts/suggest?thingId=${encodeURIComponent(val.thingId)}&propertyId=${encodeURIComponent(val.id)}`, { timeout: 30000 }),
+          get(`/sensors/series?thingId=${encodeURIComponent(val.thingId)}&propertyId=${encodeURIComponent(val.id)}&hours=24`, { timeout: 30000 }).then((r) => r.points).catch(() => [])]);
+      } catch (err) { body.replaceChildren(h('div', { class: 'msg error' }, err.message)); return; }
+      builder(val, rule || {
+        op: tp ? tp.op : tip.op, limit: tp && tp.limit != null ? tp.limit : tip.limit, minutes: tp ? tp.minutes : tip.minutes,
+        level: tp ? tp.level : tip.level, location: tip.location, label: tip.label || val.label, on: true,
+      }, series, rule ? null : tip, !!rule);
+    };
+
+    function builder(val, rule, series, tip, isEdit) {
+      const bool = isBoolValue(val);
+      const unit = val.unit || '';
+      let op = rule.op; let limit = isNum(rule.limit) ? rule.limit : (isNum(val.value) ? val.value : 0);
+      let minutes = rule.minutes ?? 5; let level = rule.level || 'urgent'; let on = rule.on !== false;
+      // ---- the sentence
+      const opSel = h('select', { class: 'ab-chip', 'aria-label': 'When' }, (bool ? [['on', 'turns on'], ['off', 'turns off']] : [['above', 'goes above'], ['below', 'drops below']])
+        .map(([k, l]) => h('option', { value: k }, l)));
+      opSel.value = op;
+      const limIn = h('input', { class: 'ab-chip num', type: 'number', step: 'any', inputmode: 'decimal', value: limit, 'aria-label': 'Limit', style: { width: '96px' } });
+      const minSel = h('select', { class: 'ab-chip', 'aria-label': 'For how long' }, MINUTES.map(([m, l]) => h('option', { value: m }, m ? `for ${l}` : 'right away')));
+      minSel.value = String(minutes);
+      if (!MINUTES.some(([m]) => m === minutes)) minSel.append(h('option', { value: minutes, selected: true }, `for ${minutes} min`));
+      const whoBtns = h('div', { class: 'ab-who', role: 'radiogroup', 'aria-label': 'Then' }, WHO.map(([k, l, s2]) => {
+        const b = h('button', { type: 'button', role: 'radio', class: `ab-whoopt ${k}`, 'aria-checked': String(k === level) }, h('b', null, l), h('span', null, s2));
+        b.addEventListener('click', () => { level = k; whoBtns.querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x === b))); update(); });
+        return b;
+      }));
+      const where = h('select', { class: 'ab-chip', 'aria-label': 'Restroom' }, h('option', { value: '' }, 'no restroom set'),
+        info.locations.map((l) => h('option', { value: l.name }, l.name)));
+      where.value = rule.location || '';
+      const sentence = h('div', { class: 'ab-sentence' },
+        h('span', null, 'When'), h('b', { class: 'ab-what' }, `${val.thing} · ${val.label}`), opSel,
+        bool ? null : h('span', { class: 'ab-lim' }, limIn, unit ? h('span', { class: 'muted' }, unit) : null), minSel,
+        h('span', null, 'at'), where);
+      // ---- chart with a draggable limit line
+      const W = 600; const H = 150;
+      const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, class: 'ab-chart', preserveAspectRatio: 'none' });
+      const zone = sv('rect', { class: 'ab-zone', x: 0, width: W });
+      const line = sv('polyline', { class: 'ab-line' });
+      const lim = sv('line', { class: 'ab-limit', x1: 0, x2: W });
+      const handle = sv('rect', { class: 'ab-handle', x: W - 70, width: 70, height: 22, rx: 11 });
+      const htxt = sv('text', { class: 'ab-htxt', x: W - 35, 'text-anchor': 'middle' });
+      svg.append(zone, line, lim, handle, htxt);
+      const vals = series.map((p) => p[1]).concat(isNum(val.value) ? [val.value] : []);
+      let lo = vals.length ? Math.min(...vals) : 0; let hi = vals.length ? Math.max(...vals) : 1;
+      if (!bool) { lo = Math.min(lo, limit); hi = Math.max(hi, limit); }
+      if (bool) { lo = 0; hi = 1; }
+      const pad = (hi - lo || 1) * 0.15; lo -= pad; hi += pad;
+      const yOf = (x) => H - 4 - ((x - lo) / (hi - lo)) * (H - 8);
+      const xOfI = (i) => (series.length > 1 ? (i / (series.length - 1)) * W : 0);
+      line.setAttribute('points', series.map((p, i) => `${xOfI(i).toFixed(1)},${yOf(p[1]).toFixed(1)}`).join(' '));
+      const step = (() => { const r = hi - lo; const e = 10 ** Math.floor(Math.log10(r / 50 || 1)); return e; })();
+      const slider = h('input', { class: 'ab-slider', type: 'range', min: lo, max: hi, step, value: limit, 'aria-label': 'Drag the limit' });
+      const setLimit = (x) => { limit = +(+x).toFixed(Math.max(0, -Math.floor(Math.log10(step)))); limIn.value = limit; slider.value = limit; update(); };
+      if (!bool) {
+        let drag = false;
+        const fromEvent = (e) => { const r = svg.getBoundingClientRect(); const y = ((e.clientY - r.top) / r.height) * H; setLimit(lo + ((H - 4 - y) / (H - 8)) * (hi - lo)); };
+        svg.addEventListener('pointerdown', (e) => { drag = true; svg.setPointerCapture(e.pointerId); fromEvent(e); });
+        svg.addEventListener('pointermove', (e) => { if (drag) fromEvent(e); });
+        svg.addEventListener('pointerup', () => { drag = false; });
+        slider.addEventListener('input', () => setLimit(slider.value));
+        limIn.addEventListener('input', () => { if (limIn.value !== '' && isNum(+limIn.value)) { limit = +limIn.value; slider.value = limit; update(false); } });
+      }
+      opSel.addEventListener('change', () => { op = opSel.value; update(); });
+      minSel.addEventListener('change', () => { minutes = Number(minSel.value); update(); });
+      where.addEventListener('change', () => update());
+      // ---- verdicts
+      const nowLine = h('div', { class: 'ab-now' });
+      const pastLine = h('div', { class: 'small muted' });
+      const name = h('input', { class: 'input', maxlength: 60, value: rule.label || val.label, 'aria-label': 'Name in reports and texts' });
+      const sample = h('div', { class: 'sms-preview' });
+      name.addEventListener('input', () => update(false));
+      const onSw = switchEl(on, (x) => { on = x; }, 'Alert is on');
+      function update() {
+        const y = yOf(bool ? 0.5 : limit);
+        lim.setAttribute('y1', y); lim.setAttribute('y2', y);
+        handle.setAttribute('y', y - 11); htxt.setAttribute('y', y + 4); htxt.textContent = bool ? '' : show(limit, unit);
+        handle.classList.toggle('hidden', bool); 
+        const above = op === 'above' || op === 'on';
+        zone.setAttribute('y', above ? 0 : y); zone.setAttribute('height', above ? y : H - y);
+        const cur = val.value;
+        const isOver = bool ? (op === 'on' ? cur === true || cur === 1 : !(cur === true || cur === 1)) : (op === 'above' ? cur > limit : cur < limit);
+        nowLine.className = `ab-now ${isOver ? 'over' : 'ok'}`;
+        nowLine.textContent = `Right now: ${show(cur, unit)} — ${isOver ? (minutes ? `over the limit; it would alert if it stays like this for ${minutes} min` : 'over the limit; it would alert at once') : 'fine, no alert'}.`;
+        const past = wouldHaveFired(series, op, limit, minutes);
+        pastLine.textContent = past == null ? 'No history yet to test this on.'
+          : past.times ? `In the last 24 hours this would have alerted ${past.times} time${past.times === 1 ? '' : 's'} (longest ${past.longestMin} min).`
+            : 'In the last 24 hours this would not have alerted.';
+        sample.textContent = level === 'report' ? 'No text — a job appears in Reports and My jobs.'
+          : previewText(name.value.trim() || val.label, op, limit, unit, level, where.value);
+      }
+      const msg = message();
+      const save = h('button', { class: 'btn primary', type: 'button' }, icon('check'), isEdit ? 'Save' : 'Create alert');
+      save.addEventListener('click', () => busy(save, 'Saving…', async () => {
+        if (!bool && !isNum(+limIn.value)) { say(msg, 'Type the limit as a number.', 'error'); return; }
+        try {
+          const r = await post('/admin/sensor-alerts', { id: isEdit ? rule.id : '', thingId: val.thingId, propertyId: val.id, label: name.value.trim(),
+            op, limit: bool ? null : Number(limIn.value), level, minutes, location: where.value, on });
+          close(); toast(r.message, 'success'); after();
+        } catch (err) { say(msg, err.message, 'error'); }
+      }));
+      const del = isEdit ? h('button', { class: 'btn danger left', type: 'button' }, 'Delete') : null;
+      if (del) {
+        del.addEventListener('click', async () => {
+          if (!(await confirmBox('Delete this alert?', 'The sensor stays on the dashboard; it just won\'t make jobs or texts any more.', { ok: 'Delete', danger: true }))) return;
+          try { await post(`/admin/sensor-alerts/${encodeURIComponent(rule.id)}/delete`); close(); toast('Alert deleted.'); after(); } catch (err) { say(msg, err.message, 'error'); }
+        });
+      }
+      const test = isEdit ? h('button', { class: 'btn ghost', type: 'button' }, 'Send test') : null;
+      if (test) test.addEventListener('click', () => testAlert({ ...rule, text: rule.text || val.label }, test));
+      const back = !isEdit && values ? h('button', { class: 'btn ghost', type: 'button', onclick: pickStep }, icon('back'), 'Back') : null;
+      body.replaceChildren(
+        h('div', { class: 'detail-head' }, h('div', null, h('h2', null, isEdit ? 'Edit alert' : 'New alert'),
+          h('div', { class: 'small muted' }, 'Fill in the sentence, or drag the red line on the chart.')),
+        h('button', { class: 'btn ghost icon', type: 'button', 'aria-label': 'Close', onclick: () => close() }, icon('x'))),
+        sentence,
+        h('div', { class: 'ab-chartbox' }, svg, h('div', { class: 'ab-axis' }, h('span', null, '24 h ago'), h('span', null, 'now'))),
+        bool ? null : slider,
+        nowLine, pastLine,
+        tip && tip.why ? h('div', { class: 'small muted' }, h('b', null, 'Why this limit: '), tip.why) : null,
+        h('div', { class: 'field' }, h('label', null, 'Then'), whoBtns),
+        h('details', { class: 'ab-more' }, h('summary', null, 'Name, text preview, on/off'),
+          h('div', { class: 'stack tight' }, h('div', { class: 'field' }, h('label', null, 'Name in reports and texts'), name),
+            h('div', { class: 'field' }, h('label', null, 'Text that goes out'), sample),
+            h('div', { class: 'row' }, onSw, h('span', { class: 'small' }, 'Alert is on')))),
+        msg,
+        h('div', { class: 'actions' }, del || back, test, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel'), save));
+      update();
     }
-    setTimeout(preview, 0);
-    return [
-      h('div', { class: 'detail-head' }, h('div', null, h('h2', null, `Alert: ${v.label}`),
-        h('div', { class: 'small muted' }, [v.thing, `now ${show(v.value, unit)}`].filter(Boolean).join(' · '))),
-      h('button', { class: 'btn ghost icon', type: 'button', 'aria-label': 'Close', onclick: () => close() }, icon('x'))),
-      tip && tip.why ? h('div', { class: 'msg', style: { display: 'block' } }, h('b', null, 'Suggested limit. '), tip.why) : null,
-      h('div', { class: 'field' }, h('label', null, 'Alert when the value'), opSeg),
-      limitRow, minutes,
-      h('div', { class: 'field' }, h('label', null, 'Then'), cards),
-      where, name,
-      h('div', { class: 'field' }, h('label', null, 'Text that goes out'), sample),
-      h('div', { class: 'row', style: { gap: '10px' } }, onSwitch, h('div', { class: 'grow' }, h('b', { class: 'small' }, 'Alert is on'),
-        h('div', { class: 'small muted' }, 'Checked every 15 seconds on the Pi, even when nobody has the app open.'))),
-      msg,
-      existing && existing.why ? h('div', { class: 'small muted' }, h('b', null, 'Now: '), existing.why) : null,
-      h('div', { class: 'actions' }, del, test, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel'), save),
-    ];
+
+    if (v) build(v, existing, null); else pickStep();
+    return [body];
   }, { wide: true });
 }
 

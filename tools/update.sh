@@ -73,17 +73,18 @@ if [ ! -x "$PY" ]; then
   fail "The app was never set up on this Pi. Run ./setup_pi.sh once first."
 elif [ "$(cat .venv/.requirements-hash 2>/dev/null)" != "$REQ_HASH" ]; then
   say "Installing new Python packages (only needed this time)"
-  .venv/bin/pip install -q -r requirements.txt || fail "Installing packages failed. Check the internet connection."
+  REQ=requirements.txt
+  if [ -f .venv/.system-pyside6 ]; then   # PySide6 comes from Raspberry Pi OS here: don't let pip shadow it
+    REQ="$(mktemp)"; grep -v '^PySide6' requirements.txt > "$REQ"
+  fi
+  .venv/bin/pip install -q --prefer-binary -r "$REQ" || fail "Installing packages failed. Check the internet connection."
   echo "$REQ_HASH" > .venv/.requirements-hash
 fi
 
-# The dashboard is shown inside the app: make sure its web viewer is installed.
+# The app's screens need Qt WebEngine (without it only the old classic screens open).
 if ! "$PY" -c "import PySide6.QtWebEngineWidgets" 2>/dev/null; then
-  say "Installing the in-app dashboard viewer (only needed this time)"
-  VER="$("$PY" -c 'import importlib.metadata as m; print(m.version("PySide6"))' 2>/dev/null)"
-  if [ -z "$VER" ] || ! .venv/bin/pip install -q "PySide6-Addons[webengine]==$VER"; then
-    echo "Couldn't install it automatically; the Dashboard tab will explain what to do."
-  fi
+  say "Installing the screens' web viewer (Qt WebEngine)"
+  ./tools/ensure_webengine.sh || echo "Couldn't install it — the app will show the old screens. Run ./setup_pi.sh again."
 fi
 
 # Keep the desktop icons up to date (quietly).

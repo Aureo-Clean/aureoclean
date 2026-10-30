@@ -166,6 +166,7 @@ class Insights:
         self.started_at: Optional[str] = None
         self.last_error: Optional[str] = None
         self._questions: deque = deque()
+        self._answers: dict[str, tuple[float, dict]] = {}
         self._auto_tried: Optional[float] = None   # when the daily run was last tried (monotonic)
 
     # ------------------------------------------------------------------ storage
@@ -184,13 +185,13 @@ class Insights:
                 "lastError": self.last_error, "latest": self.latest()}
 
     # ------------------------------------------------------------------ data
-    def _prompt(self, answer_format=None, system=None, question: str = "") -> tuple[dict, dict]:
+    def _prompt(self, answer_format=None, system=None, question: str = "", max_records: int = 300) -> tuple[dict, dict]:
         records = dataset(self.service, DAYS)
         summary = summarize(records)
         sensors = sensor_context(self.service)
         s = self.service.llm.settings()
         local = s["provider"] == "openai" and is_local(s["url"])
-        prompt = build_prompt(records, summary, question, max_records=60 if local else 300, sensors=sensors,
+        prompt = build_prompt(records, summary, question, max_records=min(60, max_records) if local else max_records, sensors=sensors,
                               answer_format=answer_format, system=system)
         sensor_values = sum(len(p["values"]) for p in (sensors or {}).get("pages", []))
         return prompt, {"reports": len(records), "sensorValues": sensor_values,
@@ -260,17 +261,26 @@ class Insights:
         if len(question) < 3:
             raise LlmError("Type a question first.")
         now = time.monotonic()
+        key = question.lower()
+        hit = self._answers.get(key)
+        if hit and now - hit[0] < 300:      # the same question again within 5 minutes: same answer, no wait
+            return hit[1]
         while self._questions and now - self._questions[0] > 3600:
             self._questions.popleft()
         if len(self._questions) >= QUESTIONS_PER_HOUR:
             raise LlmError("That's a lot of questions this hour — try again a bit later.")
         self._questions.append(now)
-        prompt, counts = self._prompt(answer_format=ASK_FORMAT, system=ASK_SYSTEM, question=question)
-        text = self.service.llm.ask(prompt["system"], prompt["user"], max_tokens=4096)
+        # Questions use the newest 100 reports (plus the full summary): a much smaller prompt answers faster.
+        prompt, counts = self._prompt(answer_format=ASK_FORMAT, system=ASK_SYSTEM, question=question, max_records=100)
+        text = self.service.llm.ask(prompt["system"], prompt["user"], max_tokens=2048, fast=True)
         parsed = parse_json(text)
         self.service.audit("insights_question", actor, None, {"question": question[:80]})
-        return {**clean_answer(parsed, "" if parsed else text), "question": question, **counts,
-                "askedAt": datetime.now(timezone.utc).isoformat()}
+        result = {**clean_answer(parsed, "" if parsed else text), "question": question, **counts,
+                  "askedAt": datetime.now(timezone.utc).isoformat()}
+        if len(self._answers) > 50:
+            self._answers.clear()
+        self._answers[key] = (now, result)
+        return result
 
     # ------------------------------------------------------------------ for janitors
     def today(self) -> dict:

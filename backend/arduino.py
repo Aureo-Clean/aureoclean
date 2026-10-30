@@ -67,6 +67,17 @@ class ArduinoError(Exception):
     pass
 
 
+def unit_from_name(variable: str) -> str:
+    """Plain Float/Int variables have no unit type in Arduino Cloud: guess it from the name
+    (temperature → °C, humidity → %, gasResistance → kΩ, tofDistanceCm → cm …)."""
+    n = (variable or "").lower()
+    for pattern, unit in ((r"temp", "°C"), (r"humid", "%"), (r"pressure", "hPa"), (r"gasresistance|gasbaseline", "kΩ"),
+                          (r"cm$|distancecm", "cm"), (r"co2", "ppm"), (r"voc", "ppm"), (r"ammonia|nh3|ppm$", "ppm")):
+        if re.search(pattern, n):
+            return unit
+    return ""
+
+
 def nice_name(variable: str) -> str:
     """waterLevel / water_level → Water level"""
     words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", variable or "").replace("_", " ").split()
@@ -247,7 +258,7 @@ class ArduinoCloud:
             "id": p.get("id"), "thingId": thing.get("id"), "thing": thing.get("name") or "",
             "name": name, "label": nice_name(name), "type": p.get("type") or "",
             "value": p.get("last_value"),
-            "unit": UNITS.get((p.get("type") or "").upper(), ""),
+            "unit": UNITS.get((p.get("type") or "").upper(), "") or unit_from_name(name),
             "updatedAt": p.get("value_updated_at") or p.get("last_value_updated_at") or p.get("updated_at"),
             "writable": (p.get("permission") or "").upper() == "READ_WRITE",
         }

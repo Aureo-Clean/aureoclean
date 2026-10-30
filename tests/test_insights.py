@@ -165,7 +165,7 @@ class Providers(InsightsBase):
         self.assertNotIn("warning", r)
         self.assertTrue(self.svc.llm.configured)
         budgets = [c["json"]["generationConfig"]["maxOutputTokens"] for c in self.ai.calls if c.get("json")]
-        self.assertEqual(budgets[:2], [1024, 16384])            # asked again with room to answer
+        self.assertEqual(budgets[:2], [256, 16384])            # asked again with room to answer
         latest = self.svc.insights.run_now(self.admin.actor)
         self.assertEqual(latest["headline"], INSIGHT["headline"])
 
@@ -334,3 +334,45 @@ class Daily(InsightsBase):
         self.svc.store.delete(self.svc.insights.collection, "latest")
         self.svc.insights._auto_tried = None
         self.assertFalse(self.svc.insights.tick())             # switched off
+
+
+class FastAi(__import__("unittest").TestCase):
+    def test_think_less_settings_per_model(self):
+        from backend.llm import LlmClient
+        self.assertEqual(LlmClient.thinking_config("gemini-2.5-flash"), {"thinkingBudget": 0})
+        self.assertEqual(LlmClient.thinking_config("gemini-3.5-flash"), {"thinkingLevel": "low"})
+        self.assertIsNone(LlmClient.thinking_config("gemini-2.0-flash"))
+        self.assertIsNone(LlmClient.thinking_config("claude-haiku-5-5"))
+
+    def test_fast_calls_send_it_and_fall_back_if_refused(self):
+        import tempfile
+        from pathlib import Path
+        from backend.llm import LlmClient
+
+        class R:
+            def __init__(self, status, data):
+                self.status_code, self._d, self.text = status, data, json.dumps(data)
+
+            def json(self):
+                return self._d
+
+        class Http:
+            def __init__(self):
+                self.bodies = []
+
+            def post(self, url, headers=None, json=None, timeout=None):
+                self.bodies.append(json)
+                if "thinkingConfig" in json["generationConfig"]:
+                    return R(400, {"error": {"message": "Thinking level is not supported for this model."}})
+                return R(200, {"candidates": [{"content": {"parts": [{"text": '{"ok": true}'}]}, "finishReason": "STOP"}]})
+
+        f = Path(tempfile.mkdtemp()) / "llm.json"
+        f.write_text(json.dumps({"provider": "gemini", "apiKey": "k" * 30, "model": "gemini-3.5-flash"}))
+        http = Http()
+        c = LlmClient(f, http=http)
+        self.assertEqual(c.ask("s", "u", fast=True), '{"ok": true}')
+        self.assertEqual(len(http.bodies), 2)                      # refused once, then asked without it
+        c.ask("s", "u", fast=True)
+        self.assertNotIn("thinkingConfig", http.bodies[-1]["generationConfig"])   # remembered
+        c.ask("s", "u", fast=False)
+        self.assertNotIn("thinkingConfig", http.bodies[-1]["generationConfig"])

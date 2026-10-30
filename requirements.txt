@@ -1,9 +1,23 @@
-fastapi>=0.110
-uvicorn>=0.29
-pydantic>=2.6
-requests>=2.31
-firebase-admin>=6.5
-PySide6>=6.6
-pyserial>=3.5
-segno>=1.6
-openpyxl>=3.1
+# AureoClean — Python packages (Raspberry Pi OS 64-bit, Python 3.11–3.13).
+# Every line has an upper bound so pip never has to search through years of old
+# releases (that is what caused "resolution-too-deep" on Python 3.13).
+fastapi>=0.110,<1
+uvicorn>=0.29,<1
+pydantic>=2.6,<3
+requests>=2.31,<3
+PySide6>=6.7,<7
+pyserial>=3.5,<4
+segno>=1.6,<2
+openpyxl>=3.1,<4
+
+# Firebase (optional: only for AUREOCLEAN_MODE=firebase) and the libraries it pulls in.
+# The lower bounds skip old releases with broken metadata (e.g. "cachecontrol has an invalid Requires-Python").
+firebase-admin>=6.5,<8
+cachecontrol>=0.14,<1
+google-api-core>=2.19,<3
+google-api-python-client>=2.140,<3
+google-cloud-firestore>=2.19,<3
+google-cloud-storage>=2.18,<4
+grpcio>=1.66,<2
+grpcio-status>=1.66,<2
+protobuf>=5.26,<7

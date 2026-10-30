@@ -43,8 +43,20 @@ def _webengine_available() -> bool:
 
 
 def main() -> int:
-    if "--classic" in sys.argv or not _webengine_available():
-        # The previous Qt screens: also used when this Pi has no web viewer installed.
+    if "--classic" in sys.argv:
+        from .app import main as classic_main
+        return classic_main()
+    if not _webengine_available():
+        # Without Qt WebEngine the new screens can't open. Say so clearly (this used to fall back
+        # silently, which looked like "the update didn't install"), then open the previous screens.
+        print("AureoClean: Qt WebEngine is missing — run ./setup_pi.sh again. Opening the classic screens.", file=sys.stderr)
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        app = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.warning(None, "AureoClean — old screens",
+                            "The new AureoClean screens need Qt WebEngine, which isn't installed on this Pi.\n\n"
+                            "Open a Terminal and run:\n    cd ~/aureoclean\n    ./setup_pi.sh\n\n"
+                            "The previous (classic) screens open for now.")
+        del app
         from .app import main as classic_main
         return classic_main()
 

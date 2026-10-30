@@ -111,6 +111,7 @@ class LlmClient:
     def __init__(self, settings_file: Path, http=None):
         self.file = settings_file
         self.http = http or requests.Session()
+        self._thinking_refused: set[str] = set()   # models that rejected the "think less" setting
 
     # ------------------------------------------------------------------ settings
     def _saved(self) -> dict:
@@ -248,11 +249,15 @@ class LlmClient:
         s = self.settings()
         return LOCAL_TIMEOUT if s["provider"] == "openai" and is_local(s["url"]) else CLOUD_TIMEOUT
 
-    def ask(self, system: str, user: str, max_tokens: int = 2500) -> str:
+    def ask(self, system: str, user: str, max_tokens: int = 2500, fast: bool = False) -> str:
         """Send one question; returns the model's text (asked to be JSON).
 
         Providers retire models now and then. If the model is gone (or none was chosen),
-        the newest suitable one is looked up, saved, and the question is sent again."""
+        the newest suitable one is looked up, saved, and the question is sent again.
+
+        fast=True: for quick jobs (tips, form filling, questions, suggestions) the model is asked to
+        think as little as possible — Gemini's thinking is most of its waiting time."""
+        self._fast = fast
         if not self.configured:
             raise LlmError("The AI isn't set up yet (Reports → Insights → AI settings).")
         self.switched: Optional[tuple[str, str]] = None
@@ -288,18 +293,36 @@ class LlmClient:
         self.switched = (old, new)
         return new
 
+    @staticmethod
+    def thinking_config(model: str) -> Optional[dict]:
+        """Gemini's "think less" setting: none for 2.5 Flash models, low for Gemini 3+; None if unknown."""
+        v = re.search(r"gemini-(\d+(?:\.\d+)?)", model or "")
+        if not v:
+            return None
+        ver = float(v.group(1))
+        if ver >= 3:
+            return {"thinkingLevel": "low"}
+        if ver >= 2.5 and "flash" in model:
+            return {"thinkingBudget": 0}
+        return None
+
     def _ask_once(self, system: str, user: str, max_tokens: int) -> str:
         s = self.settings()
         provider, key, model = s["provider"], s["apiKey"], s["model"]
         try:
             if provider == "gemini":
-                resp = self.http.post(
-                    GEMINI_URL.format(model=model), headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-                    json={"systemInstruction": {"parts": [{"text": system}]},
-                          "contents": [{"role": "user", "parts": [{"text": user}]}],
-                          "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens,
-                                               "responseMimeType": "application/json"}},
-                    timeout=self.timeout())
+                gen = {"temperature": 0.3, "maxOutputTokens": max_tokens, "responseMimeType": "application/json"}
+                think = self.thinking_config(model) if getattr(self, "_fast", False) and model not in self._thinking_refused else None
+                if think:
+                    gen["thinkingConfig"] = think
+                body = {"systemInstruction": {"parts": [{"text": system}]},
+                        "contents": [{"role": "user", "parts": [{"text": user}]}], "generationConfig": gen}
+                headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+                resp = self.http.post(GEMINI_URL.format(model=model), headers=headers, json=body, timeout=self.timeout())
+                if think and resp.status_code == 400 and "think" in str(getattr(resp, "text", "") or resp.json()).lower():
+                    self._thinking_refused.add(model)       # this model doesn't take it: ask normally from now on
+                    gen.pop("thinkingConfig", None)
+                    resp = self.http.post(GEMINI_URL.format(model=model), headers=headers, json=body, timeout=self.timeout())
             elif provider == "claude":
                 resp = self.http.post(
                     CLAUDE_URL, headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},

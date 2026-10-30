@@ -34,7 +34,8 @@ export function alertsView() {
       const [page, sensors] = await Promise.all([get('/admin/alerts', { timeout: 30000 }), get('/sensors', { timeout: 30000 }).catch(() => null)]);
       values = [];
       for (const t of (sensors && sensors.things) || []) for (const v of t.properties) if (canAlert(v)) values.push(v);
-      if (!body.contains(document.activeElement) || document.activeElement === document.body) draw(page);
+      const typing = body.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+      if (!typing) draw(page);    // don't redraw under someone who is typing or choosing
     } catch (err) { body.replaceChildren(errorBox(err, load)); } finally { busyNow = false; }
   }
 
@@ -137,13 +138,10 @@ export function alertsView() {
           h('div', { class: 'row-why' }, h('span', { class: `chip ${color}` }, word), ' ', v ? rule.why : 'This value is gone from Arduino Cloud.')),
         h('div', { class: 'alert-btns' }, sw, h('div', { class: 'row', style: { gap: '4px' } }, test, edit)));
     });
-    const pick = h('select', { class: 'input', 'aria-label': 'Sensor value' }, h('option', { value: '' }, 'Choose a sensor value…'),
-      values.map((v) => h('option', { value: v.id }, `${v.thing} · ${v.label} (now ${show(v.value, v.unit)})`)));
-    const add = h('button', { class: 'btn primary', type: 'button' }, icon('plus'), 'Add');
-    add.addEventListener('click', () => { const v = byId.get(pick.value); if (!v) { pick.focus(); return; } alertEditor(v, null, load); });
-    return section('Your alerts', 'Your own limits on any sensor value — also from a tile on Live sensors.', null,
-      rows.length ? h('div', { class: 'list' }, rows) : h('p', { class: 'small muted' }, 'None yet.'),
-      values.length ? h('div', { class: 'row', style: { gap: '8px' } }, h('div', { class: 'grow' }, pick), add) : null);
+    const add = h('button', { class: 'btn primary', type: 'button', disabled: !values.length }, icon('plus'), 'New alert');
+    add.addEventListener('click', () => alertEditor(null, null, load, values));
+    return section('Your alerts', 'Start from a template (too hot, bad smell, damp floor, someone inside too long…) or any sensor value.', add,
+      rows.length ? h('div', { class: 'list' }, rows) : h('p', { class: 'small muted' }, 'None yet — tap New alert.'));
   }
 
   // ---------------------------------------------------------------- 5. connection
