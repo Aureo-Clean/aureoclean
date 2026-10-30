@@ -76,7 +76,7 @@ is enabled, and merge `firestore.rules` into your Firestore rules.
 ### Create the first admin
 
 ```bash
-.venv/bin/python tools/create_admin.py, tools/install_launcher.sh
+.venv/bin/python tools/create_admin.py
 ```
 
 If the email **already has a Firebase Authentication account** (for example
@@ -84,7 +84,7 @@ If the email **already has a Firebase Authentication account** (for example
 deleted and its password stays the same:
 
 ```bash
-.venv/bin/python tools/create_admin.py, tools/install_launcher.sh --link-existing
+.venv/bin/python tools/create_admin.py --link-existing
 ```
 
 ### Run
