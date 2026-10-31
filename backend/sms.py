@@ -339,6 +339,10 @@ def detect_modem(ports=CANDIDATE_PORTS, bauds=CANDIDATE_BAUDS, opener=None, exis
     Returns {"port", "baud", "model"}; raises SmsError with advice for what went wrong:
     no port, the serial console still on, garbled bytes (wrong level/ground), or silence."""
     opener = opener or open_port
+    if ports is CANDIDATE_PORTS:
+        # USB adapters (CP2102, CH340 …) first, by their fixed name: it stays the same whichever USB port is used.
+        import glob
+        ports = tuple(sorted(glob.glob("/dev/serial/by-id/*"))) + tuple(ports)
     seen, tried, errors = set(), [], []
     garbled: dict[str, int] = {}
     with MODEM_LOCK:
