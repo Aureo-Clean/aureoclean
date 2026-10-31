@@ -33,7 +33,7 @@ export function dataPanel(body) {
       const firebase = s.mode.startsWith('Firebase');
       status.replaceChildren(
         h('div', { class: 'row wrap' }, h('span', { class: `dot ${firebase ? (s.online ? (s.pending ? 'warn' : 'ok') : 'warn') : 'off'}` }),
-          h('b', null, firebase ? (s.online ? (s.pending ? `Online — ${s.pending} change(s) sending` : 'Online — in sync with Firebase') : `Offline — ${s.pending} change(s) waiting`) : 'Local only'),
+          h('b', null, firebase ? (s.online ? (s.pending ? `Online — ${s.pending} change(s) sending` : 'System online — in sync with Firebase') : `Offline — ${s.pending} change(s) waiting`) : 'Not connected to Firebase — this Pi only'),
           h('div', { class: 'grow' }), firebase ? sync : null),
         h('div', { class: 'kv' }, h('span', null, 'Storage'), h('b', null, s.mode)),
         h('div', { class: 'kv' }, h('span', null, 'On this Pi'), h('b', null, s.encrypted ? 'Encrypted (AES-256)' : 'Not encrypted')),

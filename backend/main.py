@@ -320,7 +320,10 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
             t.start()
             t.join(3)
         net = watch.status() if watch is not None else {"internet": "unknown", "message": ""}
-        return {"ok": True, "mode": svc().settings.mode, **net}
+        s = svc()
+        st = s.store.status() if hasattr(s.store, "status") else {}
+        return {"ok": True, "mode": s.settings.mode, **net,
+                "firebase": bool(st.get("online")), "pending": st.get("pending", 0)}
 
     @app.post("/auth/login")
     def login(body: LoginBody):

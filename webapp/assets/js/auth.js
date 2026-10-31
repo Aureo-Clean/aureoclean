@@ -73,8 +73,12 @@ export function loginView(_params, query) {
 
   get('/health?recheck=true', { timeout: 15000 }).then((r) => {
     const online = r.internet === 'online' || r.internet === 'unknown';
-    status.replaceChildren(h('span', { class: `dot ${online ? 'ok' : 'warn'}` }),
-      `Service running · ${online ? (r.mode === 'local' ? 'local mode' : 'connected') : r.message}`);
+    let dot = 'ok'; let text;
+    if (r.mode === 'local') { dot = 'warn'; text = 'Not connected to Firebase — data is saved on this Pi only'; }
+    else if (r.firebase) text = 'System online';
+    else if (online) { dot = 'warn'; text = 'Online, but Firebase isn\'t reachable — saving on this Pi, syncs when it is'; }
+    else { dot = 'warn'; text = 'Offline — saving on this Pi, syncs when the Wi-Fi is back'; }
+    status.replaceChildren(h('span', { class: `dot ${dot}` }), text);
   }).catch((err) => status.replaceChildren(h('span', { class: 'dot fail' }), err.message));
 
   const syncKiosk = () => exitKiosk.classList.toggle('hidden', !(shell.isPi && shell.kiosk));

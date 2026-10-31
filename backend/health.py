@@ -52,7 +52,8 @@ class HealthMonitor:
 
     def cloud(self):
         if self.svc.settings.mode != "firebase":
-            return _check("cloud", "Firebase", "off", "Local mode: data is stored on this Pi only (encrypted).")
+            return _check("cloud", "Firebase", "warn", "Not connected to Firebase: data is saved on this Pi only. Set "
+                          "AUREOCLEAN_MODE=firebase in ~/.config/aureoclean/aureoclean.env and restart.")
         st = self.svc.store.status() if hasattr(self.svc.store, "status") else {}
         pending = st.get("pending", 0)
         if st.get("online"):
