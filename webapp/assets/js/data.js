@@ -1,7 +1,7 @@
 // Admins: the Pi's local data (System → Data) and the deleted bin for reports (#/bin).
 // The local copy is encrypted on the Pi; opening it here needs the admin's password again,
 // lasts a few minutes, and is written to the activity log. Codes and password hashes never show.
-import { ago, busy, confirmBox, get, h, icon, invalidate, modal, post, toast, when } from './core.js';
+import { ago, busy, confirmBox, get, h, icon, invalidate, modal, openExternal, post, toast, when } from './core.js';
 import { empty, errorBox, field, message, say, segmented } from './ui.js';
 
 const LABELS = { reports: 'Reports', deletedReports: 'Deleted', users: 'Users', janitorRequests: 'Sign-ups', adminInvites: 'Invites',
@@ -34,7 +34,9 @@ export function dataPanel(body) {
       status.replaceChildren(
         h('div', { class: 'row wrap' }, h('span', { class: `dot ${firebase ? (s.online ? (s.pending ? 'warn' : 'ok') : 'warn') : 'off'}` }),
           h('b', null, firebase ? (s.online ? (s.pending ? `Online — ${s.pending} change(s) sending` : 'System online — in sync with Firebase') : `Offline — ${s.pending} change(s) waiting`) : 'Not connected to Firebase — this Pi only'),
-          h('div', { class: 'grow' }), firebase ? sync : null),
+          h('div', { class: 'grow' }), firebase ? sync : null,
+          h('button', { class: `btn sm ${firebase && s.online ? 'ghost' : 'primary'}`, type: 'button', onclick: () => connectFirebaseDialog() },
+            firebase ? 'Firebase settings' : 'Connect to Firebase')),
         h('div', { class: 'kv' }, h('span', null, 'Storage'), h('b', null, s.mode)),
         h('div', { class: 'kv' }, h('span', null, 'On this Pi'), h('b', null, s.encrypted ? 'Encrypted (AES-256)' : 'Not encrypted')),
         firebase ? h('div', { class: 'kv' }, h('span', null, 'Last sent / received'), h('b', null, `${s.lastPush ? ago(s.lastPush) : '—'} / ${s.lastPull ? ago(s.lastPull) : '—'}`)) : null,
@@ -144,3 +146,81 @@ export function binView() {
   return view;
 }
 
+
+/** Connect to Firebase: three short steps, no Terminal. Saves the settings, moves the key, restarts. */
+export async function connectFirebaseDialog() {
+  let st;
+  try { st = await get('/admin/firebase'); } catch (err) { toast(err.message, 'error'); return; }
+  modal((close) => {
+    const link = (url, text) => h('button', { class: 'btn sm', type: 'button', onclick: () => openExternal(url) }, icon('external'), text);
+    const web = field('Web API key', { placeholder: st.hasWebKey ? '(already saved — paste only to change it)' : 'AIza…', autocomplete: 'off' });
+    const db = field('Realtime Database address', { value: st.databaseUrl || '', placeholder: st.databaseGuess, autocomplete: 'off' });
+    let keyText = ''; let keyFromDownloads = st.inDownloads[0] || '';
+    const keyState = h('div', { class: 'small' });
+    const file = h('input', { type: 'file', accept: '.json,application/json', class: 'hidden' });
+    file.addEventListener('change', async () => {
+      const f = file.files[0];
+      if (!f) return;
+      keyText = await f.text(); keyFromDownloads = '';
+      drawKey();
+    });
+    const pick = h('button', { class: 'btn sm', type: 'button', onclick: () => file.click() }, 'Choose the key file…');
+    const rescan = h('button', { class: 'btn sm ghost', type: 'button' }, icon('reload'), 'Look in Downloads again');
+    rescan.addEventListener('click', async () => {
+      try { st = await get('/admin/firebase'); if (!keyText) keyFromDownloads = st.inDownloads[0] || ''; drawKey(); } catch (err) { toast(err.message, 'error'); }
+    });
+    function drawKey() {
+      keyState.className = 'small';
+      if (keyText) keyState.replaceChildren(icon('check'), ' Key file chosen.');
+      else if (keyFromDownloads) keyState.replaceChildren(icon('check'), ` Found in Downloads: ${keyFromDownloads}`);
+      else if (st.hasKeyFile) keyState.replaceChildren(icon('check'), ' A key is already saved on this Pi.');
+      else { keyState.className = 'small muted'; keyState.textContent = 'Not found yet — press “Generate new private key” in Firebase, then “Look in Downloads again”.'; }
+    }
+    drawKey();
+    const msg = message();
+    const save = h('button', { class: 'btn primary', type: 'button' }, icon('check'), 'Connect');
+    save.addEventListener('click', () => busy(save, 'Connecting…', async () => {
+      try {
+        const r = await post('/admin/firebase/connect', { webApiKey: web.input.value.trim(), databaseUrl: db.input.value.trim(),
+          keyJson: keyText, keyFromDownloads }, { timeout: 60000 });
+        say(msg, r.message, 'success');
+        // The service restarts itself; wait for it, then reload the app.
+        for (let i = 0; i < 60; i++) {
+          await new Promise((res) => setTimeout(res, 1500));
+          try { const hlt = await get('/health', { timeout: 4000 }); if (hlt.mode === 'firebase') { location.reload(); return; } } catch { /* restarting */ }
+        }
+        say(msg, 'Saved. Close AureoClean and open it again to finish.', 'warn');
+      } catch (err) { say(msg, err.message, 'error'); }
+    }));
+    const step = (n, title, ...kids) => h('div', { class: 'fb-step' }, h('span', { class: 'fb-n' }, String(n)), h('div', { class: 'grow stack tight' }, h('b', null, title), ...kids));
+    return [
+      h('div', { class: 'detail-head' }, h('div', null, h('h2', null, 'Connect to Firebase'),
+        h('div', { class: 'small muted' }, `Project ${st.projectId}. Data is then saved to Firebase and kept on this Pi for when the Wi-Fi drops.`)),
+      h('button', { class: 'btn ghost icon', type: 'button', 'aria-label': 'Close', onclick: () => close() }, icon('x'))),
+      step(1, 'Web API key', h('div', { class: 'small muted' }, 'Firebase → Project settings → General → “Web API key”. Copy it and paste it here.'),
+        link(st.links.general, 'Open Project settings'), web),
+      step(2, 'Service-account key', h('div', { class: 'small muted' }, 'Firebase → Project settings → Service accounts → “Generate new private key” → Generate key. It downloads a file; AureoClean picks it up from Downloads and moves it somewhere safe.'),
+        h('div', { class: 'row wrap' }, link(st.links.serviceAccounts, 'Open Service accounts'), rescan, pick), keyState, file),
+      step(3, 'Realtime Database address (for the sensors)', h('div', { class: 'small muted' }, 'Firebase → Realtime Database → the address at the top (https://…firebasedatabase.app).'),
+        link(st.links.database, 'Open Realtime Database'), db),
+      msg,
+      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel'), save),
+    ];
+  }, { wide: true });
+}
+
+/** A banner for admins when data isn't going to Firebase (local only, or not reachable). */
+export function firebaseBanner() {
+  const box = h('div', { class: 'fb-banner hidden', role: 'status' });
+  get('/admin/firebase', { timeout: 15000 }).then((st) => {
+    if (st.mode === 'firebase' && st.online) return;
+    const local = st.mode !== 'firebase';
+    box.replaceChildren(icon('shield'),
+      h('div', { class: 'grow' }, h('b', null, local ? 'Data is saved on this Pi only' : 'Not connected to Firebase right now'),
+        h('div', { class: 'small' }, local ? 'Connect to Firebase so reports and accounts are saved online too (and synced).'
+          : `Saving on this Pi; it syncs when Firebase is reachable.${st.error ? ` (${st.error.slice(0, 120)})` : ''}`)),
+      h('button', { class: 'btn sm primary', type: 'button', onclick: () => connectFirebaseDialog() }, local ? 'Connect to Firebase' : 'Check settings'));
+    box.classList.remove('hidden');
+  }).catch(() => {});
+  return box;
+}

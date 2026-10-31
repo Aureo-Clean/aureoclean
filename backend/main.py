@@ -154,6 +154,13 @@ class SensorAlertBody(BaseModel):
     on: bool = True
 
 
+class FirebaseConnectBody(BaseModel):
+    webApiKey: str = Field("", max_length=200)
+    databaseUrl: str = Field("", max_length=300)
+    keyJson: str = Field("", max_length=20000)
+    keyFromDownloads: str = Field("", max_length=200)
+
+
 class ReasonBody(BaseModel):
     reason: str = Field("", max_length=200)
 
@@ -484,6 +491,14 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     @app.get("/admin/data/browse")
     def data_browse(collection: str, request: Request, session: Session = Depends(admin)):
         return svc().browse_data(session, request.headers.get("x-data-token", ""), collection[:40])
+
+    @app.get("/admin/firebase")
+    def firebase_status(_: Session = Depends(admin)):
+        return svc().firebase_setup_status()
+
+    @app.post("/admin/firebase/connect")
+    def firebase_connect(body: FirebaseConnectBody, session: Session = Depends(admin)):
+        return svc().connect_firebase(session, body.webApiKey, body.databaseUrl, body.keyJson, body.keyFromDownloads)
 
     @app.post("/admin/data/sync")
     def data_sync(session: Session = Depends(admin)):

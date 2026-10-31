@@ -2223,6 +2223,25 @@ class AureoService:
         return {"collection": collection, "total": len(rows),
                 "rows": [{"id": i, "data": redact(d)} for i, d in rows[:max(1, min(limit, 500))]]}
 
+    def firebase_setup_status(self) -> dict:
+        from .firebase_setup import FirebaseSetup
+        st = FirebaseSetup(self.settings, self.settings.sms_settings_file.parent).status()
+        live = self.store.status() if hasattr(self.store, "status") else {}
+        return {**st, "online": bool(live.get("online")), "error": live.get("error")}
+
+    def connect_firebase(self, admin: Session, web_api_key: str, database_url: str, key_json: str, key_from_downloads: str,
+                         restart: bool = True) -> dict:
+        from .firebase_setup import FirebaseSetup, SetupError
+        setup = FirebaseSetup(self.settings, self.settings.sms_settings_file.parent)
+        try:
+            result = setup.connect(web_api_key, database_url, key_json, key_from_downloads)
+        except SetupError as exc:
+            raise BadRequest(str(exc))
+        self.audit("firebase_connected", admin.actor, None, {"project": result["projectId"], "database": bool(result["databaseUrl"])})
+        if restart:
+            setup.restart_soon()
+        return {**result, "restarting": restart}
+
     def sync_now(self, admin: Session) -> dict:
         if not hasattr(self.store, "sync_once"):
             raise BadRequest("Local-only mode: there is no Firebase to sync with.")

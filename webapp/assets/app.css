@@ -926,3 +926,11 @@ a.alert-line { text-decoration: none; color: inherit; }
 pre.json { margin: 0; padding: var(--s3); border-radius: var(--radius-sm); background: #0F1E36; color: #E8F0FC; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
            white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow: auto; }
 .btn.danger.solid { background: var(--red); color: #fff; border-color: var(--red); }
+/* Connect to Firebase */
+.fb-step { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.fb-n { width: 26px; height: 26px; border-radius: 50%; background: var(--navy); color: #fff; font-weight: 700; display: grid; place-items: center; flex-shrink: 0; }
+.fb-step .btn { align-self: flex-start; }
+.fb-banner { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius); background: var(--amber-soft);
+             color: var(--amber-text); border: 1px solid #E9B866; flex-shrink: 0; }
+.fb-banner > .icon-svg { width: 22px; height: 22px; flex-shrink: 0; }
+.fb-banner b { color: var(--ink); }
