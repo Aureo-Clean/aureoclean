@@ -77,6 +77,10 @@ def main() -> int:
 
     how = "linked (existing password unchanged)" if args.link_existing else "created"
     print(f"Admin '{profile['username']}' {how}. You can now sign in to the AureoClean app.")
+    if hasattr(service.store, "sync_once"):
+        st = service.store.sync_once(force_pull=True)
+        print("Synced to Firebase." if st["online"] and not st["pending"] else
+              f"Saved on this Pi; {st['pending']} change(s) go to Firebase when the Pi is online.")
     return 0
 
 

@@ -14,6 +14,7 @@ import requests
 
 log = logging.getLogger("aureoclean.firebase")
 
+from ..firestore_format import from_firestore, to_firestore
 from .base import AccountDisabled, AccountExists, AlreadyExists, ProviderError
 
 SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
@@ -80,7 +81,7 @@ def _guard_firestore(cls):
 
         return inner
 
-    for name in ("get", "create", "set", "delete", "query", "latest", "transact"):
+    for name in ("get", "create", "set", "delete", "query", "latest", "transact", "changed_since"):
         setattr(cls, name, wrap(getattr(cls, name)))
     return cls
 
@@ -89,7 +90,7 @@ def _guard_firestore(cls):
 class FirebaseBackend:
     supports_email_verification = True
 
-    def __init__(self, project_id: str, web_api_key: str, credentials_path: str):
+    def __init__(self, project_id: str, web_api_key: str, credentials_path: str, database_url: str = ""):
         try:
             import firebase_admin
             from firebase_admin import auth, credentials, firestore
@@ -107,7 +108,8 @@ class FirebaseBackend:
         try:
             app = firebase_admin.get_app("aureoclean")
         except ValueError:
-            app = firebase_admin.initialize_app(cred, {"projectId": project_id}, name="aureoclean")
+            opts = {"projectId": project_id, **({"databaseURL": database_url} if database_url else {})}
+            app = firebase_admin.initialize_app(cred, opts, name="aureoclean")
 
         self._auth = auth
         self._app = app
@@ -124,19 +126,19 @@ class FirebaseBackend:
 
     def get(self, collection: str, doc_id: str) -> Optional[dict]:
         snap = self._ref(collection, doc_id).get(**self._rt)
-        return snap.to_dict() if snap.exists else None
+        return from_firestore(snap.to_dict()) if snap.exists else None
 
     def create(self, collection: str, doc_id: str, data: dict) -> None:
         from google.api_core.exceptions import AlreadyExists as GAlreadyExists
         from google.api_core.exceptions import Conflict
 
         try:
-            self._ref(collection, doc_id).create(data, **self._rt)
+            self._ref(collection, doc_id).create(to_firestore(data), **self._rt)
         except (GAlreadyExists, Conflict) as exc:
             raise AlreadyExists(f"{collection}/{doc_id}") from exc
 
     def set(self, collection: str, doc_id: str, data: dict) -> None:
-        self._ref(collection, doc_id).set(data, **self._rt)
+        self._ref(collection, doc_id).set(to_firestore(data), **self._rt)
 
     def delete(self, collection: str, doc_id: str) -> None:
         self._ref(collection, doc_id).delete(**self._rt)
@@ -147,7 +149,14 @@ class FirebaseBackend:
         q = self._db.collection(collection)
         for field, value in equals.items():
             q = q.where(filter=FieldFilter(field, "==", value))
-        return [(snap.id, snap.to_dict()) for snap in q.stream(**self._rt)]
+        return [(snap.id, from_firestore(snap.to_dict())) for snap in q.stream(**self._rt)]
+
+    def changed_since(self, collection: str, since_iso: str) -> list[tuple[str, dict]]:
+        """Documents whose _meta.updatedAt is after since_iso (for the two-way sync)."""
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        q = self._db.collection(collection).where(filter=FieldFilter("_meta.updatedAt", ">", to_firestore(since_iso, "updatedAt")))
+        return [(snap.id, from_firestore(snap.to_dict())) for snap in q.stream(**self._rt)]
 
     def latest(self, collection: str, field: str, limit: int) -> list[tuple[str, dict]]:
         q = (
@@ -155,7 +164,7 @@ class FirebaseBackend:
             .order_by(field, direction=self._firestore.Query.DESCENDING)
             .limit(limit)
         )
-        return [(snap.id, snap.to_dict()) for snap in q.stream(**self._rt)]
+        return [(snap.id, from_firestore(snap.to_dict())) for snap in q.stream(**self._rt)]
 
     def transact(self, collection: str, doc_id: str, fn: Callable[[Optional[dict]], Optional[dict]]):
         ref = self._ref(collection, doc_id)
@@ -163,18 +172,18 @@ class FirebaseBackend:
         @self._firestore.transactional
         def run(transaction):
             snap = ref.get(transaction=transaction, **self._rt)
-            result = fn(snap.to_dict() if snap.exists else None)
+            result = fn(from_firestore(snap.to_dict()) if snap.exists else None)
             if result is not None:
-                transaction.set(ref, result)
+                transaction.set(ref, to_firestore(result))
             return result
 
         return run(self._db.transaction())
 
     # ------------------------------------------------------------ Identity
-    def create_account(self, email: str, password: str, display_name: str) -> str:
+    def create_account(self, email: str, password: str, display_name: str, uid: Optional[str] = None) -> str:
         try:
             user = self._auth.create_user(
-                email=email, password=password, display_name=display_name, app=self._app
+                email=email, password=password, display_name=display_name, app=self._app, **({"uid": uid} if uid else {})
             )
         except self._auth.EmailAlreadyExistsError as exc:
             raise AccountExists(email) from exc

@@ -121,7 +121,7 @@ export const session = {
 
 const SLOW = 'The AureoClean service is taking too long — the Pi\'s internet may be slow. Try again.';
 
-export async function api(method, path, body, { timeout = 50000, raw = false } = {}) {
+export async function api(method, path, body, { timeout = 50000, raw = false, headers = {} } = {}) {
   const attempts = method === 'GET' ? 2 : 1;
   for (let i = 1; i <= attempts; i++) {
     const ctrl = new AbortController();
@@ -129,7 +129,7 @@ export async function api(method, path, body, { timeout = 50000, raw = false } =
     try {
       const res = await fetch(path, {
         method,
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: ctrl.signal,
         cache: 'no-store',

@@ -10,6 +10,7 @@ import {
 import { aiFillBox, aiHeadline, aiTipCard, DANGER_NOTE, periodSummaryCard } from './insights.js';
 import { sensorsCard } from './sensors.js';
 import { smartStrip } from './smart.js';
+import { dataPanel, deleteReportDialog } from './data.js';
 
 const PUBLIC_SITE = 'https://aureo-clean.github.io/aureoclean/';
 
@@ -123,6 +124,7 @@ export function reportsView(_p, query) {
     pageHead('Reports',
       h('a', { class: 'btn sm', href: '#/insights' }, icon('sparkle'), 'AI insights'),
       h('a', { class: 'btn sm', href: '#/charts' }, icon('chart'), 'Charts'),
+      h('a', { class: 'btn sm ghost', href: '#/bin', title: 'Deleted reports' }, icon('x'), 'Deleted'),
       h('button', { class: 'btn primary sm', type: 'button', onclick: () => newReportDialog(() => view.refresh(true)) }, icon('plus'), 'New report')),
     aiHeadline(),
     h('div', { class: 'row wrap' }, seg, h('div', { class: 'grow' }), h('div', { class: 'hide-phone', style: { display: 'contents' } }, find)),
@@ -274,9 +276,10 @@ export function reportDetailView({ id }) {
         catch (err) { say(msg, err.message, 'error'); }
       });
     });
+    const del = h('button', { class: 'btn danger', type: 'button', onclick: () => deleteReportDialog(r, () => { location.hash = '#/reports'; }) }, 'Delete');
     const actions = r.status === 'resolved'
-      ? [act('open', 'Reopen', '')]
-      : [r.status === 'open' ? act('in_progress', 'Mark in progress', '') : null, act('resolved', 'Mark done', 'success')];
+      ? [del, act('open', 'Reopen', '')]
+      : [del, r.status === 'open' ? act('in_progress', 'Mark in progress', '') : null, act('resolved', 'Mark done', 'success')];
     return [
       h('div', { class: 'stack tight' },
         h('div', { class: 'row wrap' }, h('span', { class: 'chip navy' }, `#${r.smsRef || '—'}`), h('span', { class: 'chip' }, CATEGORY[r.category] || r.category),
@@ -662,11 +665,11 @@ function mailDialog(after, user = '') {
 export function systemView(_p, query) {
   let tab = query.get('tab') || 'health';
   const body = h('div', { class: 'stack' });
-  const seg = segmented([['health', 'Health'], ['sms', 'SMS & email'], ['kiosk', shell.isPi ? 'Kiosk & web' : 'Website'], ['log', 'Activity log']], tab, (id) => {
+  const seg = segmented([['health', 'Health'], ['data', 'Data'], ['sms', 'SMS & email'], ['kiosk', shell.isPi ? 'Kiosk & web' : 'Website'], ['log', 'Activity log']], tab, (id) => {
     tab = id; history.replaceState(null, '', `#/system?tab=${id}`); draw();
   }, { label: 'System sections' });
   const view = h('div', { class: 'stack enter' }, pageHead('System'), h('div', null, seg), body);
-  const draw = () => ({ health: healthPanel, sms: smsPanel, kiosk: kioskPanel, log: logPanel })[tab](body);
+  const draw = () => ({ health: healthPanel, data: dataPanel, sms: smsPanel, kiosk: kioskPanel, log: logPanel })[tab](body);
   draw();
   return view;
 }

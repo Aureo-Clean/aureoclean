@@ -13,6 +13,7 @@ import { insightsView } from './insights.js';
 import { initKeyboard } from './keyboard.js';
 import { liveView } from './sensors.js';
 import { alertsView } from './alerts.js';
+import { binView } from './data.js';
 
 const PUBLIC = new Set(['/login', '/join', '/activate', '/admin-invite', '/status']);
 
@@ -34,11 +35,12 @@ route('/report', reportProblemView);
 route('/sensors', sensorsView);
 route('/live', liveView);
 route('/alerts', alertsView);
+route('/bin', binView);
 
 const ADMIN_NAV = [
   { path: '/home', label: 'Home', icon: 'home', tab: 'Home', also: ['/live'] },
   { group: 'Operations' },
-  { path: '/reports', label: 'Reports', icon: 'reports', badge: 'reports', also: ['/charts', '/insights'], tab: 'Reports' },
+  { path: '/reports', label: 'Reports', icon: 'reports', badge: 'reports', also: ['/charts', '/insights', '/bin'], tab: 'Reports' },
   { path: '/alerts', label: 'Alerts', icon: 'bell', badge: 'alerts', tab: 'Alerts' },
   { group: 'People' },
   { path: '/people', label: 'People', icon: 'people', badge: 'people', tab: 'People' },
@@ -135,7 +137,7 @@ async function render() {
   if (signedIn && (PUBLIC.has(pathname) || pathname === '/')) { go(home, { replace: true }); return; }
   const match = matchRoute(path);
   if (!match) { go(home, { replace: true }); return; }
-  if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/insights', '/people', '/system', '/alerts'].some((p) => pathname.startsWith(p))) {
+  if (signedIn && session.user.role !== 'admin' && ['/home', '/reports', '/charts', '/insights', '/people', '/system', '/alerts', '/bin'].some((p) => pathname.startsWith(p))) {
     go('/sensors', { replace: true }); return;
   }
   if (signedIn && session.user.role === 'admin' && ['/jobs', '/report', '/sensors'].includes(pathname)) { go('/home', { replace: true }); return; }

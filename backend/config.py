@@ -39,6 +39,8 @@ class Settings:
     dashboard_url: str = ""
     arduino_cloud_url: str = "https://app.arduino.cc/"
     sms_settings_file: Path = Path("~/.config/aureoclean/sms.json").expanduser()
+    firebase_database_url: str = ""          # Realtime Database (sensor data written by Arduino Cloud)
+    sensor_path: str = "sensors"             # where in the Realtime Database the sensor data is
 
 
 def _int(name: str, default: int) -> int:
@@ -118,4 +120,6 @@ def load_settings() -> Settings:
         dashboard_url=_web_url(os.environ.get("AUREOCLEAN_DASHBOARD_URL", "")),
         arduino_cloud_url=os.environ.get("AUREOCLEAN_ARDUINO_CLOUD_URL", "").strip() or "https://app.arduino.cc/",
         sms_settings_file=Path(os.environ.get("AUREOCLEAN_ENV_FILE", DEFAULT_ENV_FILE)).expanduser().parent / "sms.json",
+        firebase_database_url=_web_url(os.environ.get("AUREOCLEAN_FIREBASE_DATABASE_URL", "")),
+        sensor_path=os.environ.get("AUREOCLEAN_SENSOR_PATH", "").strip().strip("/") or "sensors",
     )

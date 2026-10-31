@@ -340,6 +340,12 @@ class ArduinoCloud:
         return pages
 
     def readings(self) -> dict:
+        """The readings, with newer values from the Firebase Realtime Database put in (if connected)."""
+        data = self._readings()
+        feed = getattr(self, "feed", None)
+        return feed.overlay(data) if feed is not None else data
+
+    def _readings(self) -> dict:
         """{"things": [{"id", "name", "device", "properties": [...]}],
             "pages": [{"id", "name", "widgets": [{"id", "type", "name", "options", "values": [...]}]}],
             "fetchedAt"}.

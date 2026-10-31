@@ -52,13 +52,29 @@ class HealthMonitor:
 
     def cloud(self):
         if self.svc.settings.mode != "firebase":
-            return _check("cloud", "Firebase", "off", "Local mode: data is stored on this Pi only.")
-        t0 = time.monotonic()
-        try:
-            self.svc.store.get(self.svc.C_COUNTERS, "reportRef")
-            return _check("cloud", "Firebase", "ok", f"Connected ({(time.monotonic() - t0) * 1000:.0f} ms)")
-        except Exception as exc:  # noqa: BLE001
-            return _check("cloud", "Firebase", "fail", str(exc)[:160])
+            return _check("cloud", "Firebase", "off", "Local mode: data is stored on this Pi only (encrypted).")
+        st = self.svc.store.status() if hasattr(self.svc.store, "status") else {}
+        pending = st.get("pending", 0)
+        if st.get("online"):
+            if st.get("error"):
+                return _check("cloud", "Firebase sync", "warn", f"Online, but the last sync failed: {st['error'][:140]}")
+            return _check("cloud", "Firebase sync", "ok" if not pending else "warn",
+                          "In sync with Firebase." if not pending else f"Online — sending {pending} change(s)…")
+        why = st.get("error") or "no internet"
+        return _check("cloud", "Firebase sync", "warn",
+                      f"Offline ({why[:100]}). Working on the local copy; {pending} change(s) will sync when online.")
+
+    def sensor_feed(self):
+        feed = getattr(self.svc.arduino, "feed", None)
+        if feed is None:
+            return None
+        st = feed.status()
+        if st["connected"]:
+            return _check("sensor_feed", "Sensor data (Firebase)", "ok" if st["things"] else "warn",
+                          f"Live from /{st['path']}: {', '.join(st['things']) or 'no units yet'}"
+                          + (f" ({st['format']} format)" if st["format"] else ""))
+        return _check("sensor_feed", "Sensor data (Firebase)", "warn",
+                      f"Not connected ({(st['error'] or 'starting…')[:120]}). The dashboard uses the Arduino API meanwhile.")
 
     def modem(self):
         sms = self.svc.sms
@@ -193,7 +209,7 @@ class HealthMonitor:
 
     # ------------------------------------------------------------------ all
     def report(self, force_balance: bool = False) -> dict:
-        checks = [self.internet(), self.cloud(), self.modem(), self.promo(), self.sending(), self.email()]
+        checks = [c for c in (self.internet(), self.cloud(), self.sensor_feed(), self.modem(), self.promo(), self.sending(), self.email()) if c]
         bal = self.balance(force_balance)
         if bal["status"] != "off" or self.balance_code:  # optional: only shown once a balance code is set
             checks.append(bal)

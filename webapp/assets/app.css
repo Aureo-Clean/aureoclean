@@ -919,3 +919,10 @@ a.alert-line { text-decoration: none; color: inherit; }
 .ab-more summary { cursor: pointer; font-weight: 600; font-size: 13px; }
 .ab-more[open] summary { margin-bottom: var(--s2); }
 @media (max-width: 720px) { .ab-who { grid-template-columns: 1fr; } .ab-sentence { font-size: 14px; } }
+/* System → Data */
+.seg-scroll { overflow-x: auto; scrollbar-width: none; }
+.data-list { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.data-list .list-row { text-align: left; width: 100%; background: none; border-left: 0; border-right: 0; border-top: 0; }
+pre.json { margin: 0; padding: var(--s3); border-radius: var(--radius-sm); background: #0F1E36; color: #E8F0FC; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+           white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow: auto; }
+.btn.danger.solid { background: var(--red); color: #fff; border-color: var(--red); }

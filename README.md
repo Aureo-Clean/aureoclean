@@ -65,10 +65,39 @@ PySide6/WebEngine build for your Pi, it uses Raspberry Pi OS's own packages inst
 can't be installed it stops with a message — without it the app could only show its old classic screens
 (and it says so in a pop-up if that ever happens).
 
-The settings file `~/.config/aureoclean/aureoclean.env` starts in **local mode**: accounts and reports are
-stored on the Pi (SQLite) — fast and works offline. SMS, sensors, smart alerts and the AI work the same.
-(Firebase mode is still there: set `AUREOCLEAN_MODE=firebase` and fill in the Firebase lines and the
-service-account key. In local mode the public QR report page and the website sign-up can't reach the Pi.)
+### Storage: Firebase always, with a secure local copy
+
+`~/.config/aureoclean/aureoclean.env` → `AUREOCLEAN_MODE=firebase` (recommended) — fill in the Web API key,
+put the service-account key at `~/.config/aureoclean/service-account.json`, and (for the sensors) the
+Realtime Database address in `AUREOCLEAN_FIREBASE_DATABASE_URL`.
+
+* The app reads and writes the **Pi's local copy** first (fast), and a background sync sends every change
+  to Firebase and pulls changes made there — every 10 s while online. When the Wi-Fi drops, everything
+  keeps working; changes wait in an outbox and go up by themselves when it's back.
+* **Encrypted**: the local copy is encrypted (AES-256-GCM) with `~/.config/aureoclean/local.key` (owner-only).
+  Back that key up with the service-account key — without it the local copy can't be read (Firebase still has everything).
+* **Accounts**: signing in online also keeps a hashed copy on the Pi, so the same people can sign in offline.
+  Accounts made **while offline** are marked `createdLocally`, their hashed credentials go to the separate
+  `localCredentials` collection, and they're created in Firebase Authentication (same UID) once online.
+  No password is ever stored in plain text.
+* **In Firebase** the collections have plain names — `users`, `reports`, `deletedReports`, `janitorRequests`,
+  `adminInvites`, `auditLog`, `counters`, `insights`, `localCredentials`. Data under the old names
+  (`aureoUsers` …) is copied over on the first sync and left untouched (delete it in the console once
+  you've checked). Times are real Firestore timestamps; every document has a `_meta` map (`updatedAt`,
+  `device`, `offline`). Sign-in sessions stay on the Pi. Merge `firestore.rules`.
+* **Sensors**: Arduino Cloud writes the boards' values to the Realtime Database; the Pi listens live and
+  shows whichever value is newer (Firebase or the Arduino API), on the dashboard and to the smart alerts.
+  It understands Arduino webhook pushes and a clean `sensors/<Thing>/<variable>` layout, and keeps a tidy
+  summary at `sensorLatest/<thing>` = `{temperature, iaq, …, updatedAt}`.
+* **System → Data** (admins): sync status, *Sync now*, and the local data itself — after re-entering your
+  password, for 5 minutes, logged in the activity log; codes and password hashes are always hidden.
+* `AUREOCLEAN_MODE=local` keeps everything on the Pi only (still encrypted).
+
+### Deleting reports
+
+Report → **Delete** (with a reason) moves it to the **deleted bin** (Reports → *Deleted*): hidden from every
+list, chart and job, restorable for 30 days, then removed from the Pi and Firebase. *Delete forever* skips
+the wait. Every step is in the activity log.
 
 Turn on the serial port for the SMS modem: `sudo raspi-config` → *Interface Options* → *Serial Port* →
 login shell **No**, serial hardware **Yes** → reboot.
@@ -490,6 +519,10 @@ backend/
   sensor_alerts.py sensor limits → reports and texts (fixed rules, checked every 15 s)
   smart.py         smart monitoring: trends from the ESP32 units → jobs, texts, quiet hours
   advice.py        today's plan for janitors and admins (AI, or fixed rules without it)
+  sensor_feed.py   live sensor values from the Firebase Realtime Database
+  firestore_format.py  how documents look in Firestore (timestamps)
+  localcrypt.py    encryption of the local copy
+  providers/synced.py  Firebase ⇄ local copy sync, offline accounts
   alert_ideas.py   suggested alerts from the 3-day trends (and the AI), added with one tap
   llm.py           AI providers (Gemini, Claude, OpenAI-compatible / Ollama)
   insights.py      AI insights and questions (advice only), daily run

@@ -338,6 +338,16 @@ class AureoService:
         self.report_ai = ReportAI(self)
         self.sensor_alerts = SensorAlerts(self, settings.sms_settings_file.with_name("sensor_alerts.json"))
         self.smart = Smart(self, settings.sms_settings_file.parent)
+        from .sensor_feed import SensorFeed
+
+        def firebase_app():
+            store = self.store
+            if not hasattr(store, "remote") or not store.online:
+                return None
+            return getattr(store.remote(), "_app", None)
+        self.sensor_feed = SensorFeed(firebase_app, settings.sensor_path)
+        if settings.mode == "firebase" and settings.firebase_database_url:
+            self.arduino.feed = self.sensor_feed      # faster values from the Realtime Database
         self.advice = Advice(self)
         self.alert_ideas = AlertIdeas(self)
         self._seen_at: dict[str, float] = {}   # uid → when lastSeenAt was last saved (for "active today")
@@ -355,6 +365,7 @@ class AureoService:
         self.C_REPORTS = f"{prefix}Reports"
         self.C_PUBLIC_REPORTS = f"{prefix}PublicReports"  # written by the public report page (create-only)
         self.C_COUNTERS = f"{prefix}Counters"
+        self.C_DELETED_REPORTS = f"{prefix}DeletedReports"   # the deleted bin (30 days, restorable)
         self.C_SESSIONS = f"{prefix}Sessions"
         self.sessions = SessionManager(settings.session_hours, store, self.C_SESSIONS)
         self.login_failures = FailureTracker(settings.max_login_failures, settings.login_lockout_minutes)
@@ -2152,6 +2163,130 @@ class AureoService:
             except Exception:  # noqa: BLE001 - never block marking a job done
                 pass
         return report
+
+    # ------------------------------------------------ the local data (admins only)
+    DATA_COLLECTIONS = {   # what the Data screen may show → local collection suffix
+        "reports": "Reports", "deletedReports": "DeletedReports", "users": "Users", "janitorRequests": "RegistrationRequests",
+        "adminInvites": "AdminInvites", "auditLog": "AuditLogs", "localCredentials": "LocalCredentials", "counters": "Counters",
+    }
+    DATA_MINUTES = 5
+
+    def data_status(self) -> dict:
+        prefix = self.settings.collection_prefix
+        counts = self.store.collections() if hasattr(self.store, "collections") else {}
+        local = getattr(self.store, "local", self.store)
+        st = self.store.status() if hasattr(self.store, "status") else {"mode": "local", "online": False, "pending": 0}
+        return {**st, "mode": "Firebase + local copy" if self.settings.mode == "firebase" else "Local only",
+                "encrypted": bool(getattr(local, "encrypted", False)), "file": getattr(local, "path", ""),
+                "collections": [{"key": k, "count": counts.get(prefix + s, 0)} for k, s in self.DATA_COLLECTIONS.items()],
+                "minutes": self.DATA_MINUTES}
+
+    def unlock_data(self, admin: Session, password: str) -> dict:
+        """Re-enter the admin password to look at the local data for a few minutes (logged)."""
+        key = f"data:{admin.uid}"
+        if self.login_failures.locked_for(key):
+            raise TooManyAttempts("Too many wrong passwords. Try again in 15 minutes.")
+        try:
+            uid = self.identity.verify_password(admin.email, password or "")
+        except AccountDisabled:
+            uid = None
+        if uid != admin.uid:
+            self.login_failures.record_failure(key)
+            self.audit("local_data_refused", admin.actor, None, {})
+            raise Forbidden("Wrong password.")
+        self.login_failures.reset(key)
+        token = secrets.token_urlsafe(24)
+        self._data_tokens = {t: v for t, v in getattr(self, "_data_tokens", {}).items() if v[1] > time.monotonic()}
+        self._data_tokens[token] = (admin.uid, time.monotonic() + self.DATA_MINUTES * 60)
+        self.audit("local_data_opened", admin.actor, None, {})
+        return {"token": token, "minutes": self.DATA_MINUTES}
+
+    def browse_data(self, admin: Session, token: str, collection: str, limit: int = 200) -> dict:
+        hit = getattr(self, "_data_tokens", {}).get(token or "")
+        if not hit or hit[0] != admin.uid or hit[1] < time.monotonic():
+            raise Forbidden("Enter your password again to see the local data.")
+        suffix = self.DATA_COLLECTIONS.get(collection)
+        if suffix is None:
+            raise BadRequest("Unknown collection.")
+        rows = self.store.query(self.settings.collection_prefix + suffix)
+
+        def redact(v, k=""):
+            if isinstance(v, dict):
+                return {kk: redact(vv, kk) for kk, vv in v.items()}
+            if isinstance(v, list):
+                return [redact(x) for x in v]
+            if re.search(r"hash|token|secret|password|code$", k, re.I) and v:
+                return "•••• (hidden)"
+            return v
+        rows.sort(key=lambda r: ((r[1].get("_meta") or {}).get("updatedAt") or r[1].get("createdAt") or ""), reverse=True)
+        self.audit("local_data_viewed", admin.actor, None, {"collection": collection})
+        return {"collection": collection, "total": len(rows),
+                "rows": [{"id": i, "data": redact(d)} for i, d in rows[:max(1, min(limit, 500))]]}
+
+    def sync_now(self, admin: Session) -> dict:
+        if not hasattr(self.store, "sync_once"):
+            raise BadRequest("Local-only mode: there is no Firebase to sync with.")
+        st = self.store.sync_once(force_pull=True)
+        return {**st, "message": "In sync with Firebase." if st["online"] and not st["pending"] else
+                ("Offline — changes will sync when the Pi is online." if not st["online"] else f"{st['pending']} change(s) still sending…")}
+
+    # ------------------------------------------------ the deleted bin
+    BIN_DAYS = 30
+
+    def delete_report(self, admin: Session, report_id: str, reason: str = "") -> dict:
+        """Move a report to the deleted bin (restorable for 30 days, then removed everywhere)."""
+        report = self.store.get(self.C_REPORTS, report_id)
+        if report is None:
+            raise NotFound("Report not found (maybe it was already deleted).")
+        reason = " ".join((reason or "").split())[:200]
+        if len(reason) < 3:
+            raise BadRequest("Say why it's being deleted (e.g. duplicate, test, prank).")
+        now = utcnow()
+        doc = {**report, "deletedAt": iso(now), "deletedBy": {"uid": admin.uid, "username": admin.username},
+               "deleteReason": reason, "purgeAt": iso(now + timedelta(days=self.BIN_DAYS))}
+        self.store.set(self.C_DELETED_REPORTS, report_id, doc)
+        self.store.delete(self.C_REPORTS, report_id)
+        self.audit("report_deleted", admin.actor, report_id, {"title": report.get("title", "")[:80], "ref": report.get("smsRef"),
+                                                              "reason": reason})
+        return {"message": f"Report #{report.get('smsRef')} moved to the deleted bin (restorable for {self.BIN_DAYS} days)."}
+
+    def deleted_reports(self) -> list[dict]:
+        rows = [dict(r, id=i) for i, r in self.store.query(self.C_DELETED_REPORTS)]
+        now = utcnow()
+        for r in rows:
+            try:
+                r["daysLeft"] = max(0, (parse_iso(r["purgeAt"]) - now).days)
+            except (KeyError, ValueError):
+                r["daysLeft"] = None
+        return sorted(rows, key=lambda r: r.get("deletedAt", ""), reverse=True)
+
+    def restore_report(self, admin: Session, report_id: str) -> dict:
+        doc = self.store.get(self.C_DELETED_REPORTS, report_id)
+        if doc is None:
+            raise NotFound("That report isn't in the deleted bin any more.")
+        for k in ("deletedAt", "deletedBy", "deleteReason", "purgeAt", "daysLeft"):
+            doc.pop(k, None)
+        doc.setdefault("notes", []).append({"at": iso(utcnow()), "by": admin.username, "text": "Restored from the deleted bin"})
+        self.store.set(self.C_REPORTS, report_id, doc)
+        self.store.delete(self.C_DELETED_REPORTS, report_id)
+        self.audit("report_restored", admin.actor, report_id, {"ref": doc.get("smsRef")})
+        return {"message": f"Report #{doc.get('smsRef')} restored."}
+
+    def purge_report(self, admin: Optional[Session], report_id: str) -> dict:
+        doc = self.store.get(self.C_DELETED_REPORTS, report_id)
+        if doc is None:
+            raise NotFound("That report isn't in the deleted bin.")
+        self.store.delete(self.C_DELETED_REPORTS, report_id)
+        self.audit("report_purged", admin.actor if admin else {"type": "system", "username": "bin"}, report_id,
+                   {"ref": doc.get("smsRef"), "title": doc.get("title", "")[:80]})
+        return {"message": f"Report #{doc.get('smsRef')} deleted for good."}
+
+    def purge_old_deleted(self) -> int:
+        now = iso(utcnow())
+        old = [i for i, r in self.store.query(self.C_DELETED_REPORTS) if r.get("purgeAt", "9999") <= now]
+        for i in old:
+            self.purge_report(None, i)
+        return len(old)
 
     def update_report(self, admin: Session, report_id: str, status: str = "", note: str = "") -> dict:
         if status and status not in self.REPORT_STATUSES:

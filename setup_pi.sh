@@ -71,8 +71,9 @@ chmod +x run_local.sh tools/*.sh
 cat <<EOF
 
 Setup finished. Next:
-  1. (Optional) Edit $ENV_FILE — it starts in LOCAL mode: everything is
-     stored on this Pi, no Firebase needed. SMS works in both modes.
+  1. Edit $ENV_FILE: Firebase Web API key and Realtime Database address
+     (AUREOCLEAN_MODE=firebase: Firebase always + an encrypted copy on this Pi
+      that keeps working offline). Put the service-account key in $CONFIG_DIR.
   2. Create the first admin:   .venv/bin/python tools/create_admin.py
   3. Start the app:            ./run_local.sh
   4. Desktop icons:            ./tools/install_launcher.sh

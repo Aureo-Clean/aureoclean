@@ -154,6 +154,19 @@ class SensorAlertBody(BaseModel):
     on: bool = True
 
 
+class ReasonBody(BaseModel):
+    reason: str = Field("", max_length=200)
+
+
+class PasswordOnlyBody(BaseModel):
+    password: str = Field("", max_length=128)
+
+
+class AdviceApplyBody(BaseModel):
+    setting: str = Field("", max_length=40)
+    value: Optional[float] = None
+
+
 class SmartSettingsBody(BaseModel):
     enabled: Optional[bool] = None
     units: Optional[dict] = None
@@ -457,6 +470,38 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
         return svc().create_report(session, body.category, body.title, body.location, body.details,
                                    body.priority, body.notify)
 
+    @app.get("/admin/data/status")
+    def data_status(_: Session = Depends(admin)):
+        return svc().data_status()
+
+    @app.post("/admin/data/unlock")
+    def data_unlock(body: PasswordOnlyBody, session: Session = Depends(admin)):
+        return svc().unlock_data(session, body.password)
+
+    @app.get("/admin/data/browse")
+    def data_browse(collection: str, request: Request, session: Session = Depends(admin)):
+        return svc().browse_data(session, request.headers.get("x-data-token", ""), collection[:40])
+
+    @app.post("/admin/data/sync")
+    def data_sync(session: Session = Depends(admin)):
+        return svc().sync_now(session)
+
+    @app.get("/admin/reports/deleted")
+    def deleted_reports(_: Session = Depends(admin)):
+        return svc().deleted_reports()
+
+    @app.post("/admin/reports/{report_id}/delete")
+    def delete_report(report_id: str, body: ReasonBody, session: Session = Depends(admin)):
+        return svc().delete_report(session, report_id[:60], body.reason)
+
+    @app.post("/admin/reports/{report_id}/restore")
+    def restore_report(report_id: str, session: Session = Depends(admin)):
+        return svc().restore_report(session, report_id[:60])
+
+    @app.post("/admin/reports/{report_id}/purge")
+    def purge_report(report_id: str, session: Session = Depends(admin)):
+        return svc().purge_report(session, report_id[:60])
+
     @app.post("/admin/reports/{report_id}/update")
     def update_report(report_id: str, body: ReportUpdateBody, session: Session = Depends(admin)):
         return svc().update_report(session, report_id, body.status, body.note)
@@ -676,8 +721,8 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
         return svc().refresh_advice(session)
 
     @app.post("/admin/advice/apply")
-    def advice_apply(body: dict, session: Session = Depends(admin)):
-        return svc().apply_advice(session, str(body.get("setting", ""))[:40], body.get("value"))
+    def advice_apply(body: AdviceApplyBody, session: Session = Depends(admin)):
+        return svc().apply_advice(session, body.setting, body.value)
 
     @app.post("/admin/arduino/clear")
     def arduino_clear(session: Session = Depends(admin)):
@@ -775,6 +820,10 @@ def run() -> None:
     app.state.network.start()
     log.info("AureoClean API starting in %s mode on %s:%s", settings.mode, settings.host, settings.port)
     start_web_signup_import(service)
+    if hasattr(service.store, "start"):
+        service.store.start()        # Firebase ⇄ local copy, every 10 s (catches up after Wi-Fi outages)
+    if getattr(service.arduino, "feed", None) is not None:
+        service.sensor_feed.start()  # live sensor values from the Firebase Realtime Database
     service.sensor_alerts.start()   # sensor limits → reports and texts (fixed rules), every 15 s
     service.smart.start()           # smart monitoring: trends → jobs and texts (fixed rules), every 5 s
     threading.Thread(target=service.smart.seed, daemon=True, name="smart-seed").start()   # learn from Arduino history
@@ -814,6 +863,11 @@ def start_web_signup_import(service: AureoService, every: float = 20.0) -> None:
                     service.insights.tick()   # the morning AI insights, when switched on (runs in its own thread)
                 except Exception:  # noqa: BLE001
                     log.warning("Daily insights check failed; will retry", exc_info=True)
+                if state["tick"] % 180 == 0:          # about once an hour
+                    try:
+                        service.purge_old_deleted()   # the deleted bin keeps reports 30 days
+                    except Exception:  # noqa: BLE001
+                        log.warning("Emptying the deleted bin failed; will retry", exc_info=True)
                 try:
                     service.advice.tick()     # the day's advice on Home, when quiet hours end
                 except Exception:  # noqa: BLE001

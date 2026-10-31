@@ -14,6 +14,17 @@ rules_version = '2';
 // QR feedback, ...), MERGE these blocks into the existing rules instead of replacing them.
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Collections the Pi syncs (readable names; the old aureo* ones are kept as they were).
+    match /users/{doc=**}             { allow read, write: if false; }
+    match /usernames/{doc=**}         { allow read, write: if false; }
+    match /janitorRequests/{doc=**}   { allow read, write: if false; }
+    match /adminInvites/{doc=**}      { allow read, write: if false; }
+    match /auditLog/{doc=**}          { allow read, write: if false; }
+    match /reports/{doc=**}           { allow read, write: if false; }
+    match /deletedReports/{doc=**}    { allow read, write: if false; }
+    match /counters/{doc=**}          { allow read, write: if false; }
+    match /insights/{doc=**}          { allow read, write: if false; }
+    match /localCredentials/{doc=**}  { allow read, write: if false; }   // hashed passwords of accounts made offline
     match /aureoUsers/{doc=**}                 { allow read, write: if false; }
     match /aureoUsernames/{doc=**}             { allow read, write: if false; }
     match /aureoRegistrationRequests/{doc=**}  { allow read, write: if false; }
