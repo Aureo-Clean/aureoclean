@@ -361,7 +361,7 @@ class AlertsPage(SmartBase):
     def test_page_lists_automatic_rules_and_whats_happening(self):
         self.run_for(60, u_temperature=56)
         page = self.svc.alerts_page()
-        self.assertEqual([r["kind"] for r in page["automatic"]], ["fire", "hot", "air", "clean", "flush", "sensor", "offline"])
+        self.assertEqual([r["kind"] for r in page["automatic"]], ["fire", "hot", "air", "clean", "flush", "sensor", "estop", "offline"])
         self.assertIn("50 °C or more for 30 s", page["automatic"][0]["when"])
         [now] = [x for x in page["now"] if x["tier"] == 3]
         self.assertEqual((now["unit"], now["source"]), ("Urinal01", "automatic"))

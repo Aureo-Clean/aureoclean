@@ -25,8 +25,9 @@ from .smart import SETTINGS, _hour
 
 SYSTEM = """You plan the day for the cleaning team of AureoClean, a smart restroom system at STI College \
 Caloocan (Philippines). Each restroom unit (urinal or toilet) has an ESP32 with a ToF sensor that counts \
-uses, a BME680 air sensor (Bosch BSEC IAQ: 0–50 excellent, 51–100 good, 101–150 fair, 151–200 bad, \
-above 200 very bad) and an auto-flush actuator.
+uses, a BME680 air sensor (IAQ worked out on the board from the gas reading against a learned clean-air \
+baseline, Bosch-style: 0–50 excellent, 51–100 good, 101–150 fair, 151–200 bad, above 200 very bad) and an \
+auto-flush actuator. A door sensor counts visits to the room, and an automatic deodorizer sprays on a schedule.
 
 From the facts given, write:
 - "janitor": the janitors' plan for today, in time order: when, where, what to do and why (cite the \
@@ -143,7 +144,7 @@ class Advice:
                 adm.append({"title": f"{u['unit']} is offline", "detail": "No data from it right now — check its power and Wi-Fi.", "priority": "high"})
             elif u.get("iaqCalibrating"):
                 adm.append({"title": f"{u['unit']}: air sensor still calibrating",
-                            "detail": "BSEC IAQ needs a few hours to a few days to reach accuracy 3; until then bad air is judged from the raw gas reading.",
+                            "detail": "The board learns its clean-air baseline (5-min warm-up, settled after 24 h); until then bad air is judged from the raw gas reading.",
                             "priority": "low"})
             if u.get("busiestHours"):
                 b = u["busiestHours"][0]

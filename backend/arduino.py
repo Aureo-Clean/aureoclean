@@ -72,7 +72,7 @@ def unit_from_name(variable: str) -> str:
     (temperature → °C, humidity → %, gasResistance → kΩ, tofDistanceCm → cm …)."""
     n = (variable or "").lower()
     for pattern, unit in ((r"temp", "°C"), (r"humid", "%"), (r"pressure", "hPa"), (r"gasresistance|gasbaseline", "kΩ"),
-                          (r"cm$|distancecm", "cm"), (r"co2", "ppm"), (r"voc", "ppm"), (r"ammonia|nh3|ppm$", "ppm")):
+                          (r"cm$|distancecm", "cm"), (r"durationsec", "s"), (r"ammonia|nh3|ppm$", "ppm")):
         if re.search(pattern, n):
             return unit
     return ""
@@ -341,8 +341,13 @@ class ArduinoCloud:
 
     def readings(self) -> dict:
         """The readings, with newer values from the Firebase Realtime Database put in (if connected)."""
-        data = self._readings()
         feed = getattr(self, "feed", None)
+        try:
+            data = self._readings()
+        except Exception:
+            if feed is not None and feed.status()["things"]:    # Arduino Cloud unreachable: Firebase alone
+                return feed.as_readings(self._things[1] if self._things else [])
+            raise
         return feed.overlay(data) if feed is not None else data
 
     def _readings(self) -> dict:

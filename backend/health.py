@@ -71,9 +71,13 @@ class HealthMonitor:
             return None
         st = feed.status()
         if st["connected"]:
-            return _check("sensor_feed", "Sensor data (Firebase)", "ok" if st["things"] else "warn",
-                          f"Live from /{st['path']}: {', '.join(st['things']) or 'no units yet'}"
-                          + (f" ({st['format']} format)" if st["format"] else ""))
+            devs = st.get("devices") or []
+            off = [d["thing"] for d in devs if not d["online"]]
+            if not devs:
+                return _check("sensor_feed", "Sensor data (Firebase)", "warn", f"Connected, but no boards under /{st['path']} yet.")
+            return _check("sensor_feed", "Sensor data (Firebase)", "warn" if off else "ok",
+                          f"{len(devs) - len(off)} of {len(devs)} boards online"
+                          + (f"; not seen for 90 s: {', '.join(off)}" if off else f" ({', '.join(d['thing'] for d in devs)})"))
         return _check("sensor_feed", "Sensor data (Firebase)", "warn",
                       f"Not connected ({(st['error'] or 'starting…')[:120]}). The dashboard uses the Arduino API meanwhile.")
 

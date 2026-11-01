@@ -22,7 +22,7 @@ from .arduino import ArduinoError
 from .llm import LlmError, parse_json
 
 SKIP = re.compile(r"^(total|current).*|.*count$|manualflush|resetgasbaseline|resetiaqcalibration|flushthreshold|iaqaccuracy|sensorstatus", re.I)
-COVERED = re.compile(r"^(temperature|iaq|gasresistance|staticiaq|co2equivalent|breathvoc|gasbaseline)$", re.I)   # smart alerts do these
+COVERED = re.compile(r"^(temperature|iaq|gasresistance|gasbaseline|needscleaning|estoppressed)$", re.I)   # smart alerts do these
 
 SYSTEM = """You suggest extra sensor alerts for AureoClean, a smart restroom system (STI College Caloocan, \
 Philippines). Built-in alerts ALREADY cover: fire/heat, hot room, bad air (IAQ / gas), cleaning due by use \

@@ -196,32 +196,6 @@ class WholeApp(unittest.TestCase):
         self.assertEqual(store.status()["pending"], 0)
 
 
-class Feed(unittest.TestCase):
-    def test_webhook_and_clean_layouts_and_overlay(self):
-        from backend.sensor_feed import SensorFeed
-        f = SensorFeed(lambda: None)
-        f.apply("put", "/", {
-            "-Nab1": {"thing_id": "t-uuid", "values": [{"name": "temperature", "value": 31.5, "updated_at": "2026-10-31T02:00:05Z"},
-                                                         {"name": "iaq", "value": 80, "updated_at": "2026-10-31T02:00:05Z"}]},
-            "-Nab2": {"thing_id": "t-uuid", "values": [{"name": "temperature", "value": 33.0, "updated_at": "2026-10-31T02:00:15Z"}]},
-            "Urinal01": {"temperature": 29.0, "updatedAt": 1793152800000},
-        })
-        self.assertEqual(f.lookup("t-uuid", "Toilet01")["temperature"][0], 33.0)       # newest push wins
-        self.assertEqual(f.lookup("x", "urinal01")["temperature"][0], 29.0)
-        self.assertEqual(f.status()["format"], "clean+webhook")
-        f.apply("patch", "/Urinal01", {"temperature": 30.0, "updatedAt": 1793152900000})
-        self.assertEqual(f.lookup("x", "Urinal01")["temperature"][0], 30.0)
-        data = {"things": [{"id": "t-uuid", "name": "Toilet01", "properties": [
-            {"name": "temperature", "value": 30.0, "updatedAt": "2026-10-31T02:00:00+00:00"},
-            {"name": "iaq", "value": 90, "updatedAt": "2026-10-31T02:01:00+00:00"}]}]}
-        f.overlay(data)
-        props = {p["name"]: p for p in data["things"][0]["properties"]}
-        self.assertEqual((props["temperature"]["value"], props["temperature"]["via"]), (33.0, "firebase"))
-        self.assertEqual(props["iaq"]["value"], 90)                                       # Arduino's is newer: kept
-        f.apply("put", "/-Nab2", None)
-        self.assertEqual(f.lookup("t-uuid", "")["temperature"][0], 31.5)
-
-
 class LocalModeAccounts(unittest.TestCase):
     def test_account_from_local_mode_moves_into_firebase_on_first_online_sign_in(self):
         local = LocalBackend(":memory:", key=os.urandom(32))

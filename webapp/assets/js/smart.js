@@ -42,7 +42,10 @@ export function smartStrip() {
         h('div', { class: 'u-head' }, h('span', { class: `dot ${u.online ? (worst ? (worst.tier >= 2 ? 'fail' : 'warn') : 'ok') : 'off'}` }),
           h('b', null, u.name), worst ? h('span', { class: `chip ${TIER[worst.tier][1]}` }, worst.ref ? `#${worst.ref}` : '!') : null),
         h('div', { class: 'u-facts' },
-          h('span', { class: `air ${airClass(u)}` }, u.online ? (u.air ? `${u.air}${u.iaq != null && !u.calibrating ? ` ${Math.round(u.iaq)}` : ''}` : '—') : 'Offline'),
+          u.roomBoard
+            ? h('span', { class: `air ${u.online ? (u.needsCleaning ? 'warn' : 'ok') : 'off'}` }, u.online ? (u.needsCleaning ? 'Needs cleaning' : 'Clean') : 'Offline')
+            : h('span', { class: `air ${airClass(u)}` }, u.online ? (u.air ? `${u.air}${u.iaq != null && !u.calibrating ? ` ${Math.round(u.iaq)}` : ''}` : '—') : 'Offline'),
+          u.roomBoard && u.visits != null && u.online ? h('span', null, `${u.visits} visits`) : null,
           u.temperature != null && u.online ? h('span', null, `${u.temperature.toFixed(1)} °C`) : null),
         pct != null ? h('div', { class: 'u-bar', title: `${u.usesSinceCleaned} of ${u.cleanEvery} uses since cleaning` },
           h('i', { style: { transform: `scaleX(${pct})` }, class: pct >= 1 ? 'due' : pct >= 0.75 ? 'soon' : '' })) : null,
@@ -172,7 +175,7 @@ function unitDialog(u, after) {
 const GROUPS = [
   ['Emergency (texts everyone active today, any hour)', ['fireTemp', 'fireSeconds', 'riseDegrees', 'riseMinTemp']],
   ['Hot room', ['hotTemp', 'hotMinutes']],
-  ['Air (BSEC IAQ)', ['iaqBad', 'iaqVeryBad', 'airJobMinutes', 'airSmsMinutes', 'gasDropPercent']],
+  ['Air (IAQ)', ['iaqBad', 'iaqVeryBad', 'airJobMinutes', 'airSmsMinutes', 'gasDropPercent']],
   ['Cleaning and flush', ['cleanEvery', 'flushMissUses']],
   ['Units', ['offlineMinutes']],
 ];

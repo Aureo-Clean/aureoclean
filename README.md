@@ -85,10 +85,13 @@ Realtime Database address in `AUREOCLEAN_FIREBASE_DATABASE_URL`.
   (`aureoUsers` …) is copied over on the first sync and left untouched (delete it in the console once
   you've checked). Times are real Firestore timestamps; every document has a `_meta` map (`updatedAt`,
   `device`, `offline`). Sign-in sessions stay on the Pi. Merge `firestore.rules`.
-* **Sensors**: Arduino Cloud writes the boards' values to the Realtime Database; the Pi listens live and
-  shows whichever value is newer (Firebase or the Arduino API), on the dashboard and to the smart alerts.
-  It understands Arduino webhook pushes and a clean `sensors/<Thing>/<variable>` layout, and keeps a tidy
-  summary at `sensorLatest/<thing>` = `{temperature, iaq, …, updatedAt}`.
+* **Sensors**: each ESP32 writes to the Realtime Database itself, under
+  `/sites/STI_Caloocan/restrooms/restroom_01/devices/<deviceId>/{meta,status,live,samples}`
+  (`urinal_01`, `toilet_01`, `room_01`, `deodorizer_01` = Things Urinal01, Toilet01, Room01, Deodorizer01).
+  The Pi only reads it (Admin SDK): Arduino Cloud is the main source; a newer Firebase value replaces it,
+  and if Arduino Cloud can't be reached the live screen comes from Firebase alone. A board is online
+  while `status/lastSeen` is under 90 s old; missing fields show "—". Buttons (flush, spray, mark
+  cleaned …) always go through the Arduino Cloud API, never Firebase.
 * **System → Data** (admins): sync status, *Sync now*, and the local data itself — after re-entering your
   password, for 5 minutes, logged in the activity log; codes and password hashes are always hidden.
 * `AUREOCLEAN_MODE=local` keeps everything on the Pi only (still encrypted).

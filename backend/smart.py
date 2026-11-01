@@ -8,10 +8,13 @@ sensorStatus, totalUses/totalToFUsers, totalFlushes …) it looks for:
 * Fire / heat   — very hot for 30 s, temperature rising fast, or heat + bad air together
                   → EMERGENCY: texts everyone active today, at any hour.
 * Hot room      — above 35 °C for 10 min → a job; still hot after 20 min → texts the janitors.
-* Bad air       — BSEC IAQ above 150 (or, while IAQ is still calibrating, the raw gas reading
-                  far below this hour's normal) for 10 min → a job; 20 min → texts the janitors.
+* Bad air       — IAQ above 150 (worked out on the board from the BME680 gas reading against its
+                  learned clean-air baseline; Bosch-style 0–500, higher is worse) (or, while IAQ is still calibrating, the raw gas reading
+                  far below this hour's normal; iaqAccuracy 0 = warming up, 2 = learning, 3 = settled) for 10 min → a job; 20 min → texts the janitors.
                   The job says whether it came after heavy use or while the unit was barely used.
-* Cleaning due  — uses counted by the ToF sensor since the last cleaning → a job.
+* Cleaning due  — uses counted by the ToF sensor since the last cleaning → a job; or the room
+                  board (Room01) says needsCleaning after its door count reaches cleaningThreshold.
+* Deodorizer    — the sprayer's emergency-stop button is pressed → a job for the admins.
 * Auto-flush    — uses keep coming but the flush count doesn't move → a "broken flush" job.
 * Sensor faults — BME680 error status, or a unit that stopped sending → a job for the admin.
 
@@ -85,8 +88,11 @@ ALIASES = {
     "flushes": ("totalflushes", "flushcount"),
     "flushThreshold": ("flushthreshold",),
     "occupied": ("cubicleoccupied", "occupied"),
-    "voc": ("breathvoc",),
-    "co2": ("co2equivalent",),
+    "needsCleaning": ("needscleaning",),
+    "visits": ("visitssincecleaning",),
+    "cleaningThreshold": ("cleaningthreshold",),
+    "markCleaned": ("markcleaned",),
+    "estop": ("estoppressed",),
 }
 TRACKED = ("temperature", "iaq", "accuracy", "gas", "status", "uses", "flushes", "humidity")
 KINDS = {  # problem kind → (category, issues, which values it's about)
@@ -96,6 +102,7 @@ KINDS = {  # problem kind → (category, issues, which values it's about)
     "clean": ("cleanliness", ["dirty_toilet"], ("uses",)),
     "flush": ("facility", ["broken_flush"], ("flushes", "uses")),
     "sensor": ("system", [], ("status",)),
+    "estop": ("facility", [], ("estop",)),
     "offline": ("system", [], ()),
 }
 TIER_TEXT = {0: "Watching", 1: "Job (no text)", 2: "Texted the janitors", 3: "Emergency"}
@@ -271,13 +278,21 @@ class Smart:
                 v = next((names[a] for a in aliases if a in names), None)
                 if v is not None:
                     by[meaning] = v
-            if not ({"temperature", "iaq", "uses"} & set(by)):
+            if not ({"temperature", "iaq", "uses", "needsCleaning", "estop"} & set(by)):
                 continue
             u = cfg["units"].get(t["id"], {})
             out.append({"id": t["id"], "name": t["name"], "vars": by, "location": u.get("location") or "",
                         "locationCode": u.get("locationCode"), "kind": u.get("kind") or unit_kind(t["name"]),
-                        "on": u.get("on", True)})
+                        "on": u.get("on", True), "lastSeen": t.get("lastSeen")})
         return out
+
+    @staticmethod
+    def _newest(unit: dict, extra=()) -> float:
+        """When the unit was last heard from: its board's lastSeen (Firebase, every 30 s) or its newest value."""
+        stamps = [_ts(v.get("updatedAt"), 0) for v in unit["vars"].values()] + list(extra)
+        if _num(unit.get("lastSeen")):
+            stamps.append(unit["lastSeen"])
+        return max(stamps + [0])
 
     def _ingest(self, unit: dict, now: float) -> None:
         for meaning in TRACKED:
@@ -417,7 +432,7 @@ class Smart:
         starting = _num(status) and status == 1
         # --- offline: nothing new from the unit for a while
         stamps = [dq[-1][0] for (t, _), dq in self.samples.items() if t == tid and dq]
-        newest = max([_ts(v.get("updatedAt"), 0) for v in unit["vars"].values()] + stamps + [0])
+        newest = self._newest(unit, stamps)
         if newest and now - newest > cfg["offlineMinutes"] * 60:
             out.append({"kind": "offline", "tier": 1, "title": f"{name} is offline",
                         "detail": f"No data for {mins(now - newest)}. Check its power and Wi-Fi. Smart alerts can't "
@@ -491,6 +506,23 @@ class Smart:
                 out.append({"kind": "clean", "tier": tier, "title": f"Cleaning due: {since} uses since the last cleaning",
                             "detail": f"{name} has been used {since} times since it was last cleaned ({_ago(c.get('cleanedAt'))}). "
                                       f"Cleaning is due every {cfg['cleanEvery']} uses.", "facts": {"uses": since}})
+        # --- the room board says it needs cleaning (door count reached its cleaningThreshold)
+        if self._value(unit, "needsCleaning") is True:
+            visits, limit = self._value(unit, "visits"), self._value(unit, "cleaningThreshold")
+            held = self._held(tid, "clean", now)
+            much = _num(visits) and _num(limit) and limit > 0 and visits >= limit * 1.5
+            tier = 2 if much or held >= 3600 else 1
+            count = f"{int(visits)} visits" if _num(visits) else "Many visits"
+            out.append({"kind": "clean", "tier": tier, "title": f"Cleaning due: {count.lower()} since the last cleaning",
+                        "detail": f"{count} to {name} since it was last cleaned"
+                                  + (f" (cleaning is due every {int(limit)})" if _num(limit) else "")
+                                  + ". Mark the job done after cleaning — that also resets the room counter.",
+                        "facts": {"visits": visits}})
+        # --- deodorizer emergency stop
+        if self._value(unit, "estop") is True:
+            out.append({"kind": "estop", "tier": 1, "title": "Deodorizer emergency stop is pressed",
+                        "detail": f"The emergency-stop button on {name} is pressed, so it won't spray. Check the sprayer "
+                                  "is safe, then release the button.", "facts": {}})
         # --- auto-flush not flushing
         if _num(uses) and "usesAtFlush" in c and _num(self._value(unit, "flushes")):
             per = self._value(unit, "flushThreshold")
@@ -724,8 +756,24 @@ class Smart:
         return None
 
     # ------------------------------------------------------------------ cleaning
+    def _press_mark_cleaned(self, thing_id: str) -> bool:
+        """Room board: press its markCleaned button in Arduino Cloud (the board resets its visit count)."""
+        try:
+            for t in self.svc.arduino.readings().get("things", []):
+                if t.get("id") != thing_id:
+                    continue
+                v = next((p for p in t["properties"] if p.get("name", "").lower() == "markcleaned" and p.get("writable")), None)
+                if v:
+                    self.svc.arduino.publish(thing_id, v["id"], True)
+                    return True
+        except Exception:  # noqa: BLE001 - the job is still marked done; the board keeps asking
+            log.warning("Couldn't press markCleaned on %s", thing_id, exc_info=True)
+        return False
+
     def cleaned(self, thing_id: str) -> dict:
         """A janitor cleaned this unit: start counting uses again."""
+        if self._press_mark_cleaned(thing_id):
+            return {"markCleaned": True, "cleanedAt": iso(utcnow())}
         with self._lock:
             c = self.state["counters"].setdefault(thing_id, {})
             if c.get("uses") is None:
@@ -752,6 +800,10 @@ class Smart:
                     c["cleanedAtUses"] = c["uses"]
                     c["cleanedAt"] = iso(utcnow())
                     self._dirty = True
+            for tid in targets:
+                u = self.units_seen.get(tid) or {}
+                if u.get("roomBoard"):
+                    threading.Thread(target=self._press_mark_cleaned, args=(tid,), daemon=True).start()
             if smart.get("kind") == "flush" and smart.get("thingId"):
                 c = self.state["counters"].get(smart["thingId"])
                 if c and c.get("uses") is not None:
@@ -765,8 +817,7 @@ class Smart:
         c = self.state["counters"].get(tid, {})
         iaq, acc, temp = self._value(unit, "iaq"), self._value(unit, "accuracy"), self._value(unit, "temperature")
         uses = self._value(unit, "uses")
-        stamps = [_ts(v.get("updatedAt"), 0) for v in unit["vars"].values()]
-        newest = max(stamps + [0])
+        newest = self._newest(unit)
         problems = []
         for kind in KINDS:
             p = self.state["problems"].get(f"{tid}:{kind}")
@@ -788,6 +839,9 @@ class Smart:
             "usesSinceCleaned": int(uses) - int(c["cleanedAtUses"]) if _num(uses) and "cleanedAtUses" in c else None,
             "cleanEvery": cfg["cleanEvery"], "cleanedAt": c.get("cleanedAt"),
             "usesToday": self._uses_today(tid, now),
+            "roomBoard": "needsCleaning" in unit["vars"],
+            "needsCleaning": self._value(unit, "needsCleaning") is True,
+            "visits": int(v) if _num(v := self._value(unit, "visits")) else None,
             "problems": sorted(problems, key=lambda x: (-x["tier"], x["kind"])),
         }
 
@@ -820,11 +874,13 @@ class Smart:
             ("air", "Bad air (odour)",
              f"IAQ above {c['iaqBad']} for {c['airJobMinutes']} min (while the sensor warms up: gas reading {c['gasDropPercent']}% below normal)",
              f"Job · after {c['airSmsMinutes']} min, or IAQ above {c['iaqVeryBad']} for 5 min → texts the janitors", "amber"),
-            ("clean", "Cleaning due", f"{c['cleanEvery']} uses since the last cleaning (ToF count)",
+            ("clean", "Cleaning due", f"{c['cleanEvery']} uses since the last cleaning (ToF count), or the room board's "
+             "visit count reaches its cleaning threshold",
              f"Job · at {int(c['cleanEvery'] * 1.5)} uses → texts the janitors", "blue"),
             ("flush", "Auto-flush not working", f"{c['flushMissUses']} uses without a flush",
              f"Job · {c['flushMissUses'] * 2} uses → texts the janitors", "blue"),
             ("sensor", "Air sensor fault", "BME680 error for 5 min", "Job for the admins (no text)", ""),
+            ("estop", "Deodorizer stopped", "Emergency-stop button pressed", "Job for the admins (no text)", ""),
             ("offline", "Unit offline", f"No data for {c['offlineMinutes']} min", "Job for the admins (no text)", ""),
         ]
         return [{"kind": k, "title": ti, "when": w, "then": th, "color": col, "on": k not in c["kindsOff"],
