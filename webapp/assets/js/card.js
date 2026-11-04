@@ -86,7 +86,7 @@ export function cardPinDialog(r, onDone, onCancel) {
 }
 
 // Sign-in screen: "Tap your ID card" while the reader is connected; polls the Pi for taps.
-export function cardSignIn({ onSignedIn, msg }) {
+export function cardSignIn({ onSignedIn, msg, onStatus }) {
   const hint = h('div', { class: 'card-hint hidden' }, h('div', { class: 'tap-art small waiting', 'aria-hidden': 'true' }, icon('idcard')),
     h('div', null, h('div', { class: 't' }, 'Tap your ID card'), h('div', { class: 'd' }, 'on the reader to sign in')));
   let seq = 0;
@@ -110,9 +110,14 @@ export function cardSignIn({ onSignedIn, msg }) {
     if (!stopped) timer = setTimeout(loop, 600);
   }
   get('/auth/card/status', { timeout: 6000 }).then((st) => {
+    if (onStatus) onStatus(st);
     if (!st.reader || stopped) return;
     seq = st.seq || 0;
     hint.classList.remove('hidden');
+    if (st.cardOnly) {
+      hint.classList.add('big');
+      hint.querySelector('.d').textContent = 'on the reader beside the screen to sign in';
+    }
     loop();
   }).catch(() => {});
   return { hint, stop: () => { stopped = true; clearTimeout(timer); } };

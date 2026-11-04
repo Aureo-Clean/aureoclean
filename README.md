@@ -148,6 +148,11 @@ Tap an ID card on the reader beside the screen to sign in — like the ID gates 
 Janitors are signed in at once; **administrators also type their screen-lock PIN** (or their password
 if they haven't set a PIN). On the lock screen a janitor can tap their own card instead of the PIN.
 
+**Card-only on the Pi** (System → Kiosk & web → *ID-card sign-in*): the Pi's sign-in screen then only
+takes a card tap (admins + PIN); phones and laptops on the Wi-Fi website keep using passwords. You can
+only turn it on after linking your own card. If the reader stops working, passwords work on the Pi
+again until it's back; `AUREOCLEAN_CARD_ONLY=off` in the config file turns it off in an emergency.
+
 **Link a card:** My account → *ID card* → **Link card**, then hold the card on the reader (30 s).
 Admins can link or remove someone else's card in People → ⋯ (e.g. a lost card). A card belongs to
 one account. Only a keyed hash of the card number is stored (key: `~/.config/aureoclean/card.key`),

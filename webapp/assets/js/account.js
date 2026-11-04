@@ -41,7 +41,7 @@ export function accountView(_p, _q, ctx) {
     if (me.hasCard) {
       button = h('button', { class: 'btn sm', type: 'button' }, 'Remove');
       button.addEventListener('click', async () => {
-        if (!(await confirmBox('Remove your ID card?', 'It will no longer sign you in. You can link it again any time.', { ok: 'Remove', danger: true }))) return;
+        if (!(await confirmBox('Remove your ID card?', 'It will no longer sign you in. If card-only sign-in is on, you can\'t sign in on the Pi screen until a card is linked again.', { ok: 'Remove', danger: true }))) return;
         try { await post('/me/card/remove'); toast('ID card removed.'); load(); } catch (err) { toast(err.message, 'error'); }
       });
     } else if (shell.isPi) {

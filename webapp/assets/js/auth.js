@@ -75,7 +75,14 @@ export function loginView(_params, query) {
     session.user = res.user;
     go(res.user.role === 'admin' ? '/home' : '/sensors', { replace: true });
   }
-  const cardIn = cardSignIn({ msg, onSignedIn: signedIn });   // ID-card reader on the Pi (hidden when there is none)
+  // ID-card reader on the Pi (hidden when there is none). Card-only: no password box on this screen.
+  const onlyNote = h('p', { class: 'small muted hidden', style: { textAlign: 'center' } },
+    'No card yet? Ask an administrator to link one. On a phone or laptop, open the Wi-Fi website to sign in with your password.');
+  const cardIn = cardSignIn({ msg, onSignedIn: signedIn, onStatus: (st) => {
+    if (!st.cardOnly) return;
+    [ident, pass, submit, resend].forEach((el) => el.classList.add('hidden'));
+    onlyNote.classList.remove('hidden');
+  } });
 
   get('/health?recheck=true', { timeout: 15000 }).then((r) => {
     const online = r.internet === 'online' || r.internet === 'unknown';
@@ -93,7 +100,7 @@ export function loginView(_params, query) {
 
   const card = h('section', { class: 'auth-card' },
     h('div', { class: 'stack tight' }, h('h1', null, 'Welcome back'), h('p', { class: 'lead' }, 'Sign in to look after the restrooms.')),
-    cardIn.hint, ident, pass, msg, submit, resend, status, exitKiosk);
+    cardIn.hint, onlyNote, ident, pass, msg, submit, resend, status, exitKiosk);
   focusSoon(ident.input.value ? pass.input : ident.input);
   const view = authLayout(card);
   view.cleanup = () => { shell.listeners.delete(syncKiosk); cardIn.stop(); };

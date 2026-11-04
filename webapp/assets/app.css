@@ -952,3 +952,8 @@ body:not(.on-pi) .tap-art.waiting:not(.small) { animation: tap-pulse 1.6s var(--
 @keyframes tap-pulse { 50% { transform: scale(1.06); } }
 .lock .card-or { text-align: center; font-size: 13px; font-weight: 600; padding: 8px 10px; margin-bottom: 4px;
   border: 1px dashed rgba(255,255,255,.35); border-radius: 12px; }
+.card-hint.big { flex-direction: column; text-align: center; padding: var(--s5) var(--s4); border-width: 2px; }
+.card-hint.big .tap-art.small { width: 84px; height: 84px; }
+.card-hint.big .tap-art.small .icon-svg { width: 44px; height: 44px; }
+.card-hint.big .t { font-size: 22px; }
+.card-hint.big .d { font-size: 14px; }

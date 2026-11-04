@@ -661,7 +661,9 @@ class AureoService:
         return {"username": req["username"], "message": "Account activated. You can now sign in."}
 
     # ============================================================ login
-    def login(self, identifier: str, password: str) -> dict:
+    def login(self, identifier: str, password: str, at_pi: bool = False) -> dict:
+        if at_pi and self.card_only_active():
+            raise Forbidden("On this screen, sign in by tapping your ID card. No card? Ask an administrator.")
         ident = (identifier or "").strip()
         key = f"login:{ident.lower()}"
         wait = self.login_failures.locked_for(key)
@@ -735,7 +737,47 @@ class AureoService:
 
     def card_status(self) -> dict:
         st = self.card_reader.status()
-        return {"reader": st["available"], "enabled": st["enabled"], "detail": st["detail"], "seq": self._card_seq}
+        return {"reader": st["available"], "enabled": st["enabled"], "detail": st["detail"], "seq": self._card_seq,
+                "cardOnly": self.card_only_active(), "cardOnlySet": self.card_only()}
+
+    # Card-only sign-in on the Pi screen (System → Kiosk & web). Phones on the Wi-Fi keep passwords.
+    def _access_file(self) -> Path:
+        return self.settings.sms_settings_file.with_name("access.json")
+
+    def card_only(self) -> bool:
+        if os.environ.get("AUREOCLEAN_CARD_ONLY", "").strip().lower() in ("off", "0", "no", "false"):
+            return False        # emergency override in the config file
+        try:
+            import json
+            return bool(json.loads(self._access_file().read_text()).get("cardOnly"))
+        except (OSError, ValueError):
+            return False
+
+    def card_only_active(self) -> bool:
+        """Card-only is on AND the reader works (a broken reader must not lock everyone out)."""
+        return self.card_only() and self.card_reader.available
+
+    def set_card_only(self, admin: Session, on: bool) -> dict:
+        if on:
+            if not self.card_reader.available:
+                raise BadRequest(f"Connect the card reader first. {self.card_reader.detail}")
+            if not (self.store.get(self.C_USERS, admin.uid) or {}).get("cardHash"):
+                raise BadRequest("Link your own ID card first (My account → ID card), so you can still sign in.")
+        import json
+        f = self._access_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"cardOnly": bool(on)}))
+        os.chmod(f, 0o600)
+        self.audit("card_only_on" if on else "card_only_off", admin.actor)
+        return self.card_access(admin)
+
+    def card_access(self, admin: Session) -> dict:
+        users = [u for _, u in self.store.query(self.C_USERS) if not u.get("smsOnly") and u.get("status") == "active"]
+        me = self.store.get(self.C_USERS, admin.uid) or {}
+        return {"cardOnly": self.card_only(), "active": self.card_only_active(), "reader": self.card_reader.available,
+                "readerDetail": self.card_reader.detail, "myCard": bool(me.get("cardHash")),
+                "withCard": sum(1 for u in users if u.get("cardHash")), "people": len(users),
+                "withoutCard": sorted((u.get("fullName") or u.get("username") or "") for u in users if not u.get("cardHash"))}
 
     def card_poll(self, after: int = 0) -> dict:
         """The sign-in screen asks: was a card tapped? Janitors are signed in; admins are asked for their PIN."""

@@ -342,8 +342,8 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
                 "firebase": bool(st.get("online")), "pending": st.get("pending", 0)}
 
     @app.post("/auth/login")
-    def login(body: LoginBody):
-        return svc().login(body.identifier, body.password)
+    def login(body: LoginBody, request: Request):
+        return svc().login(body.identifier, body.password, at_pi=not via_wifi(request))
 
     @app.post("/auth/resend-verification")
     def resend_verification(body: LoginBody):
@@ -431,6 +431,14 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     @app.post("/me/card/remove")
     def my_card_remove(session: Session = Depends(any_user)):
         return svc().remove_card(session)
+
+    @app.get("/admin/card-access")
+    def card_access(session: Session = Depends(admin)):
+        return svc().card_access(session)
+
+    @app.post("/admin/card-access")
+    def set_card_access(body: WebToggleBody, session: Session = Depends(admin)):
+        return svc().set_card_only(session, body.enabled)
 
     @app.post("/admin/users/{uid}/card/link")
     def user_card_link(uid: str, request: Request, session: Session = Depends(admin)):

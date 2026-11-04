@@ -103,7 +103,7 @@ class Driver(unittest.TestCase):
         self.assertTrue(r.seen("BB"))          # another card at once
 
 
-class CardSignIn(Base):
+class CardBase(Base):
     def setUp(self):
         super().setUp()
         self.svc.card_reader.available = True
@@ -118,6 +118,9 @@ class CardSignIn(Base):
         self.svc.start_card_link(who, target)
         self.tap(uid)
         return self.svc.card_link_status(who, target)
+
+
+class CardSignIn(CardBase):
 
     def test_janitor_links_a_card_then_signs_in_by_tapping(self):
         self.assertEqual(self.link(self.jan, "04A1B2C3")["state"], "linked")
@@ -200,6 +203,36 @@ class CardSignIn(Base):
             self.svc.start_card_link(self.jan)
         with self.assertRaises(Forbidden):
             self.svc.start_card_link(self.jan, self.admin.uid)
+
+
+class CardOnly(CardBase):
+    def test_turning_it_on_needs_the_reader_and_your_own_card(self):
+        with self.assertRaises(BadRequest):
+            self.svc.set_card_only(self.admin, True)          # admin has no card yet
+        self.link(self.admin, "0A0B0C0D")
+        self.assertTrue(self.svc.set_card_only(self.admin, True)["active"])
+        self.svc.card_reader.available = False
+        with self.assertRaises(BadRequest):
+            self.svc.set_card_only(self.admin, True)
+
+    def test_pi_screen_refuses_passwords_but_the_wifi_website_and_a_broken_reader_dont(self):
+        self.link(self.admin, "0A0B0C0D")
+        self.svc.set_card_only(self.admin, True)
+        with self.assertRaises(Forbidden):
+            self.svc.login("markagot", "Janitor123", at_pi=True)
+        self.assertTrue(self.svc.login("markagot", "Janitor123", at_pi=False)["token"])   # phone on the Wi-Fi
+        self.assertTrue(self.svc.card_status()["cardOnly"])
+        self.svc.card_reader.available = False                                            # reader broke
+        self.assertTrue(self.svc.login("markagot", "Janitor123", at_pi=True)["token"])
+        self.svc.card_reader.available = True
+        import os
+        os.environ["AUREOCLEAN_CARD_ONLY"] = "off"                                         # emergency override
+        try:
+            self.assertTrue(self.svc.login("markagot", "Janitor123", at_pi=True)["token"])
+        finally:
+            del os.environ["AUREOCLEAN_CARD_ONLY"]
+        access = self.svc.card_access(self.admin)
+        self.assertEqual((access["withCard"], access["withoutCard"]), (1, ["Mark Agot"]))
 
 
 if __name__ == "__main__":

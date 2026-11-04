@@ -826,6 +826,28 @@ function testRow(msg) {
   return h('div', { class: 'row wrap' }, btn, h('span', { class: 'small muted' }, 'Checks the website from this Pi and explains what to do.'));
 }
 
+function cardAccessCard(body) {
+  const card = h('section', { class: 'card stack tight' }, h('h2', null, 'ID-card sign-in'), h('p', { class: 'small muted' }, 'Checking…'));
+  get('/admin/card-access').then((a) => {
+    const msg = message();
+    const sw = switchEl(a.cardOnly, (on, el) => {
+      el.disabled = true;
+      post('/admin/card-access', { enabled: on }).then(() => { toast(on ? 'Card-only sign-in is on.' : 'Card-only sign-in is off.', 'success'); kioskPanel(body); })
+        .catch((err) => { el.set(!on); el.disabled = false; say(msg, err.message, 'error'); });
+    }, 'Card only on this screen');
+    if (!a.reader && !a.cardOnly) sw.disabled = true;
+    const who = a.withoutCard.length
+      ? `${a.withCard} of ${a.people} people have a card. No card yet: ${a.withoutCard.slice(0, 6).join(', ')}${a.withoutCard.length > 6 ? '…' : ''} — link one in People → ⋯.`
+      : `All ${a.people} people have a card.`;
+    card.replaceChildren(h('h2', null, 'ID-card sign-in'),
+      h('div', { class: 'row' }, sw, h('b', null, a.cardOnly ? (a.active ? 'Only ID cards open the panel here' : 'Card-only is paused') : 'Cards and passwords both work')),
+      h('p', { class: 'small muted' }, 'When on, the sign-in screen on this Pi only takes a tap of an ID card (administrators then type their PIN). Phones and laptops on the Wi-Fi website keep using passwords.'),
+      a.reader ? h('p', { class: 'small' }, who) : h('div', { class: 'msg warn' }, `Card reader not connected: ${a.readerDetail}${a.cardOnly ? ' Passwords work on this screen until it is back.' : ''}`),
+      !a.myCard ? h('p', { class: 'small muted' }, 'Link your own card first (My account → ID card) to turn this on.') : null, msg);
+  }).catch((err) => card.replaceChildren(h('h2', null, 'ID-card sign-in'), h('div', { class: 'msg error' }, err.message)));
+  return card;
+}
+
 function kioskPanel(body) {
   fill(body, () => Promise.all([get('/admin/web'), cached('links', () => get('/links'), 60000)]), ([web, links]) => {
     const cards = [];
@@ -838,6 +860,7 @@ function kioskPanel(body) {
         h('div', { class: 'row' }, sw, label),
         h('p', { class: 'small muted' }, 'Full screen, can\'t be closed by accident, and locks after a few minutes without a touch. Turn it off here, or on the sign-in screen with an admin password.')));
     }
+    if (shell.isPi) cards.push(cardAccessCard(body));
     const msg = message();
     const sw = switchEl(web.enabled, (on, el) => {
       el.disabled = true;

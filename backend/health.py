@@ -88,9 +88,11 @@ class HealthMonitor:
         st = reader.status()
         if st["available"]:
             linked = sum(1 for _, u in self.svc.store.query(self.svc.C_USERS) if u.get("cardHash"))
-            return _check("rfid", "ID card reader", "ok", f"{st['detail']} {linked} card(s) linked.")
-        if st["everFound"]:
-            return _check("rfid", "ID card reader", "fail", st["detail"])
+            mode = " Card-only sign-in on this screen." if self.svc.card_only() else ""
+            return _check("rfid", "ID card reader", "ok", f"{st['detail']} {linked} card(s) linked.{mode}")
+        if st["everFound"] or self.svc.card_only():
+            extra = " Card-only sign-in is paused: passwords work on the Pi until the reader is back." if self.svc.card_only() else ""
+            return _check("rfid", "ID card reader", "fail", st["detail"] + extra)
         return _check("rfid", "ID card reader", "off", f"Not found (optional). {st['detail']}")
 
     def modem(self):
