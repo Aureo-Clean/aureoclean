@@ -73,7 +73,12 @@ SETTINGS = {
     "cleanEvery": (10, 2000, int, 120, "Cleaning due after (uses)"),
     "flushMissUses": (2, 50, int, 5, "Broken flush: uses without a flush"),
     "offlineMinutes": (3, 240, int, 10, "Unit offline after (minutes without data)"),
+    # Odor-activated deodorizer: only for extremely bad air, and rarely (Bosch scale: above 300 = extremely bad).
+    "odorSprayIaq": (150, 500, int, 300, "Odor spray: IAQ at or above"),
+    "odorSprayMinutes": (1, 60, int, 2, "…for (minutes)"),
+    "odorSprayGap": (10, 480, int, 30, "At most one automatic spray every (minutes)"),
 }
+ACTIONS = ("spray",)          # automatic actions that can be switched off like the alerts
 DEFAULTS = {k: v[3] for k, v in SETTINGS.items()}
 
 # Arduino variable names (lower case) → what they are
@@ -197,7 +202,7 @@ class Smart:
     def config(self) -> dict:
         saved = self._load(self.config_file)
         out = {"enabled": bool(saved.get("enabled", True)), "units": saved.get("units") or {},
-               "kindsOff": [k for k in saved.get("kindsOff") or [] if k in KINDS]}
+               "kindsOff": [k for k in saved.get("kindsOff") or [] if k in KINDS or k in ACTIONS]}
         for k, (lo, hi, typ, default, _) in SETTINGS.items():
             v = saved.get(k, default)
             out[k] = typ(v) if _num(v) and lo <= v <= hi else default
@@ -212,7 +217,7 @@ class Smart:
                 elif k == "kindsOff":
                     if not isinstance(v, list):
                         raise ValueError("kindsOff must be a list.")
-                    cfg["kindsOff"] = [x for x in KINDS if x in v and x != "fire"]   # fire can't be switched off
+                    cfg["kindsOff"] = [x for x in (*KINDS, *ACTIONS) if x in v and x != "fire"]   # fire can't be switched off
                 elif k == "units":
                     if not isinstance(v, dict):
                         raise ValueError("Units must be a list of restrooms.")
@@ -608,6 +613,10 @@ class Smart:
                 conds = [c for c in self.detect(unit, cfg, now) if c["kind"] not in cfg["kindsOff"]]
                 made += self._manage(unit, conds, cfg, now)
                 self.units_seen[unit["id"]] = self._snapshot(unit, cfg, now)
+            try:
+                self._odor_spray(data, cfg, now)
+            except Exception:  # noqa: BLE001 - a failed spray must never stop the alerts
+                log.warning("Odor spray check failed", exc_info=True)
             if now - self._deferred_at >= 60:
                 self._deferred_at = now
                 self._prune(now)
@@ -618,6 +627,73 @@ class Smart:
             self._save_state()
             self.last_check, self.last_error = now, None
             return made
+
+    # ------------------------------------------------------------------ odor-activated deodorizer
+    def _odor_spray(self, data: dict, cfg: dict, now: float) -> None:
+        """Extremely bad air for a while → press "Spray now" on the deodorizer once, then wait.
+
+        Only when: the IAQ is calibrated (accuracy ≥ 2) and stayed at or above the limit for the whole
+        hold time; nobody is in the room (Room01); the deodorizer isn't stopped or spraying; and the
+        last automatic spray was long enough ago. Fixed rules only (no AI)."""
+        st = self.state.setdefault("spray", {})
+        if "spray" in cfg["kindsOff"]:
+            st["status"] = "off"
+            return
+        things = data.get("things", [])
+        props = lambda t: {v["name"].lower(): v for v in t.get("properties", [])}  # noqa: E731
+        sprayers = [t for t in things if (props(t).get("spraynow") or {}).get("writable")]
+        if not sprayers:
+            st["status"] = "no deodorizer"
+            return
+        units = {u["id"]: u for u in self._units(data, cfg)}
+        hold = cfg["odorSprayMinutes"] * 60
+        smelly = None
+        for tid, u in units.items():
+            acc = self._value(u, "accuracy")
+            pts = self.recent(tid, "iaq", hold + CHECK_SECONDS, now)
+            if not pts or not (_num(acc) and acc >= 2) or now - pts[-1][0] > 90:
+                continue
+            if pts[0][0] > now - hold + 2 * CHECK_SECONDS:      # not bad for the whole hold time yet
+                continue
+            if all(p[1] >= cfg["odorSprayIaq"] for p in pts):
+                level = pts[-1][1]
+                if smelly is None or level > smelly[1]:
+                    smelly = (u, level)
+        if not smelly:
+            st["status"] = "watching"
+            return
+        unit, level = smelly
+        loc = unit.get("location")
+        same = [t for t in sprayers if (cfg["units"].get(t["id"]) or {}).get("location") == loc] or sprayers
+        sprayer = same[0]
+        sp = props(sprayer)
+        if (sp.get("estoppressed") or {}).get("value") is True:
+            st["status"] = "e-stop pressed"
+            return
+        if (sp.get("sprayactive") or {}).get("value") is True:
+            st["status"] = "spraying"
+            return
+        for t in things:                                   # someone inside → wait until the room is empty
+            tp = props(t)
+            occupied = (tp.get("roomoccupied") or {}).get("value") is True or \
+                (_num((tp.get("peopleinroom") or {}).get("value")) and tp["peopleinroom"]["value"] > 0)
+            if occupied and ((cfg["units"].get(t["id"]) or {}).get("location") in (loc, None, "")):
+                st["status"] = "waiting: room occupied"
+                return
+        last = st.get("lastAt") or 0
+        if now - last < cfg["odorSprayGap"] * 60:
+            st["status"] = "waiting: sprayed recently"
+            return
+        self.svc.arduino.publish(sprayer["id"], sp["spraynow"]["id"], True)
+        st.update(lastAt=now, lastUnit=unit["name"], lastIaq=round(level), status="sprayed",
+                  count=int(st.get("count") or 0) + 1)
+        self._dirty = True
+        log.info("Odor spray: %s IAQ %s → %s sprayed", unit["name"], round(level), sprayer.get("name"))
+        self.svc.audit("auto_spray", {"type": "system", "username": "smart"}, sprayer["id"],
+                       {"unit": unit["name"], "iaq": round(level), "deodorizer": sprayer.get("name")})
+        p = self.state["problems"].get(f"{unit['id']}:air") or {}
+        if p.get("reportId"):
+            self._note(p["reportId"], f"Deodorizer sprayed automatically ({sprayer.get('name')}): IAQ {round(level)} on {unit['name']}.")
 
     def _manage(self, unit: dict, conds: list[dict], cfg: dict, now: float) -> int:
         tid = unit["id"]
@@ -857,6 +933,8 @@ class Smart:
         alive = bool(self._thread and self._thread.is_alive())
         return {"enabled": cfg["enabled"], "quiet": self.quiet(cfg=cfg), "quietHours": self.quiet_text(cfg),
                 "units": list(self.units_seen.values()),
+                "spray": {k: v for k, v in (self.state.get("spray") or {}).items() if k in ("status", "lastUnit", "lastIaq", "count")}
+                | ({"lastAt": iso(datetime.fromtimestamp(self.state["spray"]["lastAt"], timezone.utc))} if (self.state.get("spray") or {}).get("lastAt") else {}),
                 "checker": {"running": alive, "every": CHECK_SECONDS, "error": self.last_error,
                             "ago": None if self.last_check is None else round(self.clock() - self.last_check)}}
 
@@ -881,6 +959,9 @@ class Smart:
              f"Job · {c['flushMissUses'] * 2} uses → texts the janitors", "blue"),
             ("sensor", "Air sensor fault", "BME680 error for 5 min", "Job for the admins (no text)", ""),
             ("estop", "Deodorizer stopped", "Emergency-stop button pressed", "Job for the admins (no text)", ""),
+            ("spray", "Odor spray (deodorizer)",
+             f"IAQ {c['odorSprayIaq']} or more for {c['odorSprayMinutes']} min, with nobody in the room",
+             f"Sprays the deodorizer once · at most every {c['odorSprayGap']} min · never during the e-stop", "blue"),
             ("offline", "Unit offline", f"No data for {c['offlineMinutes']} min", "Job for the admins (no text)", ""),
         ]
         return [{"kind": k, "title": ti, "when": w, "then": th, "color": col, "on": k not in c["kindsOff"],

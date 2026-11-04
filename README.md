@@ -261,6 +261,15 @@ Every ESP32 unit with the AureoClean variables (`temperature`, `iaq`, `iaqAccura
 * All limits are in **Smart settings**; saved on the Pi in `~/.config/aureoclean/smart.json` (learned data:
   `smart_state.json`). **System → Health** shows "Smart monitoring" and offline units.
 
+### Odor-activated deodorizer
+
+When a urinal or toilet's IAQ stays at or above **300** (Bosch "extremely bad") for **2 minutes**, the Pi
+presses *Spray now* on Deodorizer01 once, then waits at least **30 minutes** before it may spray
+automatically again. It never sprays while the emergency stop is pressed, while it is already
+spraying, or while Room01 says someone is in the room (it waits until the room is empty). Each
+automatic spray is in the activity log and noted on the bad-air report. Change the three numbers in
+Alerts → *Limits & units* → *Odor spray*, or switch it off on the Alerts page. Fixed rules, no AI.
+
 ### Sensor alerts (sensor limits → reports and texts)
 
 A sensor value over its limit becomes a report and texts people — fixed rules on the Pi, no AI.

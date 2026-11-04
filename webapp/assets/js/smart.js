@@ -177,6 +177,7 @@ const GROUPS = [
   ['Hot room', ['hotTemp', 'hotMinutes']],
   ['Air (IAQ)', ['iaqBad', 'iaqVeryBad', 'airJobMinutes', 'airSmsMinutes', 'gasDropPercent']],
   ['Cleaning and flush', ['cleanEvery', 'flushMissUses']],
+  ['Odor spray (deodorizer, only for extremely bad air)', ['odorSprayIaq', 'odorSprayMinutes', 'odorSprayGap']],
   ['Units', ['offlineMinutes']],
 ];
 const HOURS = Array.from({ length: 24 }, (_, hr) => [String(hr), hr === 0 ? '12 AM' : hr === 12 ? '12 PM' : hr < 12 ? `${hr} AM` : `${hr - 12} PM`]);
