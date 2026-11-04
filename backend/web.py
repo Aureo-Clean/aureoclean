@@ -4,6 +4,8 @@
   service as the API (http://127.0.0.1:8765/ on the Pi).
 * "Website on Wi-Fi" (System → Kiosk & web) starts a second listener on the
   Pi's network address so phones and laptops on the same Wi-Fi can open it.
+  It is HTTPS (encrypted) with a certificate the Pi makes for itself
+  (~/.config/aureoclean/web-cert.pem); http://…:8080 only redirects there.
   Only private network addresses (home/school Wi-Fi) are let in; the website is
   never reachable from the internet unless someone forwards the port on purpose.
 """
@@ -22,7 +24,8 @@ from typing import Optional
 log = logging.getLogger("aureoclean.web")
 
 WEBAPP_DIR = Path(__file__).resolve().parent.parent / "webapp"
-DEFAULT_PORT = 8080
+DEFAULT_PORT = 8443        # HTTPS (encrypted)
+REDIRECT_PORT = 8080       # plain http: only sends phones on to the https address
 
 # Strict browser rules for the web app: only our own files, nothing from other sites.
 SECURITY_HEADERS = {
@@ -102,6 +105,83 @@ def lan_addresses() -> list[str]:
     return [a for a in dict.fromkeys(found) if not a.startswith("127.")]
 
 
+def ensure_cert(folder: Path, hosts: list[str]) -> tuple[Path, Path, str]:
+    """The Wi-Fi website's certificate (self-signed, kept so phones only have to accept it once).
+    Made again when the Pi's address changed. Returns (cert, key, SHA-256 fingerprint)."""
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    folder.mkdir(parents=True, exist_ok=True)
+    cert_file, key_file = folder / "web-cert.pem", folder / "web-key.pem"
+    ips = sorted({h for h in hosts if _is_ip(h)} | {"127.0.0.1"})
+    names = sorted({h for h in hosts if not _is_ip(h)} | {"localhost"})
+    if cert_file.exists() and key_file.exists():
+        try:
+            cert = x509.load_pem_x509_certificate(cert_file.read_bytes())
+            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+            have = {str(a) for a in san.get_values_for_type(x509.IPAddress)} | set(san.get_values_for_type(x509.DNSName))
+            fresh = cert.not_valid_after_utc - dt.timedelta(days=30) > dt.datetime.now(dt.timezone.utc)
+            if fresh and set(ips) <= have and set(names) <= have:
+                return cert_file, key_file, _fingerprint(cert.public_bytes(serialization.Encoding.DER))
+        except Exception:  # noqa: BLE001 - unreadable: make a new one
+            pass
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "AureoClean (this Pi)"),
+                      x509.NameAttribute(NameOID.ORGANIZATION_NAME, "AureoClean · STI College Caloocan")])
+    now = dt.datetime.now(dt.timezone.utc)
+    san = [x509.DNSName(n) for n in names] + [x509.IPAddress(ipaddress.ip_address(i)) for i in ips]
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - dt.timedelta(minutes=5))
+            .not_valid_after(now + dt.timedelta(days=825))
+            .add_extension(x509.SubjectAlternativeName(san), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(key, hashes.SHA256()))
+    import os
+    fd = os.open(str(key_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    os.chmod(key_file, 0o600)
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    log.info("Wi-Fi website: new HTTPS certificate for %s", ", ".join(names + ips))
+    return cert_file, key_file, _fingerprint(cert.public_bytes(serialization.Encoding.DER))
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _fingerprint(der: bytes) -> str:
+    import hashlib
+    h = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
+
+
+def redirect_app(https_port: int):
+    """A tiny plain-http listener: every request is sent on to the same page over https."""
+    async def app(scope, receive, send):
+        if scope["type"] != "http":
+            return
+        host = dict(scope.get("headers") or []).get(b"host", b"").decode("latin-1").split(":")[0] or "localhost"
+        if not all(c.isalnum() or c in ".-" for c in host):
+            host = "localhost"
+        path = scope.get("path") or "/"
+        query = scope.get("query_string") or b""
+        target = f"https://{host}:{https_port}{path}" + (f"?{query.decode('latin-1')}" if query else "")
+        await send({"type": "http.response.start", "status": 308,
+                    "headers": [(b"location", target.encode("latin-1")), (b"content-length", b"0"), (b"cache-control", b"no-store")]})
+        await send({"type": "http.response.body", "body": b""})
+    return app
+
+
 class WebAccess:
     """Turns the Wi-Fi website on and off, and remembers the choice."""
 
@@ -109,7 +189,13 @@ class WebAccess:
         self.app = app
         self.file = settings_file
         saved = self._load()
-        self.port = int(port or saved.get("port") or DEFAULT_PORT)
+        saved_port = int(saved.get("port") or 0)
+        if saved_port == REDIRECT_PORT:     # older versions served plain http on 8080
+            saved_port = 0
+        self.port = int(port or saved_port or DEFAULT_PORT)
+        self.redirect_port = REDIRECT_PORT
+        self.fingerprint = ""
+        self._redirect = None
         self.enabled = bool(saved.get("enabled"))
         self.error: Optional[str] = None
         self._server = None
@@ -138,8 +224,15 @@ class WebAccess:
             if self._thread and self._thread.is_alive():
                 return
             self.error = None
+            try:
+                cert, key, self.fingerprint = ensure_cert(self.file.parent, lan_addresses() + [f"{socket.gethostname()}.local"])
+            except Exception as exc:  # noqa: BLE001
+                self.error = f"Couldn't make the HTTPS certificate: {exc}"
+                log.warning("Wi-Fi website: %s", self.error)
+                return
             config = uvicorn.Config(self.app, host="0.0.0.0", port=self.port, log_level="warning",
-                                    proxy_headers=False, server_header=False)
+                                    proxy_headers=False, server_header=False,
+                                    ssl_certfile=str(cert), ssl_keyfile=str(key))
             server = uvicorn.Server(config)
             server.install_signal_handlers = lambda: None  # the main server handles Ctrl+C
 
@@ -158,6 +251,19 @@ class WebAccess:
             self._server = server
             self._thread = threading.Thread(target=serve, name="wifi-website", daemon=True)
             self._thread.start()
+            # http://…:8080 (old links, typed addresses) → https
+            rconf = uvicorn.Config(redirect_app(self.port), host="0.0.0.0", port=self.redirect_port, log_level="warning",
+                                   proxy_headers=False, server_header=False, lifespan="off")
+            rserver = uvicorn.Server(rconf)
+            rserver.install_signal_handlers = lambda: None
+            self._redirect = rserver
+
+            def serve_redirect():
+                try:
+                    rserver.run()
+                except (SystemExit, Exception):  # noqa: BLE001 - optional: the https address still works
+                    log.info("Wi-Fi website: the http→https redirect on port %s isn't available", self.redirect_port)
+            threading.Thread(target=serve_redirect, name="wifi-redirect", daemon=True).start()
         for _ in range(30):  # wait up to 3 s for it to come up (or fail)
             if server.started or not self._thread.is_alive():
                 break
@@ -167,6 +273,9 @@ class WebAccess:
         with self._lock:
             if self._server is not None:
                 self._server.should_exit = True
+            if self._redirect is not None:
+                self._redirect.should_exit = True
+                self._redirect = None
             thread = self._thread
         if thread:
             thread.join(5)
@@ -185,19 +294,24 @@ class WebAccess:
     def status(self) -> dict:
         # The number address first: many Android phones can't open ".local" names.
         host = socket.gethostname()
-        urls = [f"http://{a}:{self.port}" for a in lan_addresses()] + [f"http://{host}.local:{self.port}"]
+        urls = [f"https://{a}:{self.port}" for a in lan_addresses()] + [f"https://{host}.local:{self.port}"]
         return {"enabled": self.enabled, "running": self.running, "port": self.port, "urls": urls,
-                "error": self.error}
+                "error": self.error, "secure": True, "fingerprint": self.fingerprint}
 
     def self_test(self) -> dict:
         """Open the website from the Pi itself, through its Wi-Fi address. If this works but a
         phone can't connect, the Wi-Fi network is blocking devices from reaching each other."""
         import urllib.request
 
+        import ssl
+
         results = []
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE          # our own self-signed certificate: only checking it answers
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
         for addr in lan_addresses() or ["127.0.0.1"]:
-            url = f"http://{addr}:{self.port}/health"
+            url = f"https://{addr}:{self.port}/health"
             try:
                 with opener.open(url, timeout=4) as resp:
                     results.append({"address": addr, "ok": resp.status == 200, "detail": f"answered ({resp.status})"})

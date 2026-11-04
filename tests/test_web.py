@@ -63,5 +63,66 @@ class Switch(unittest.TestCase):
             self.assertEqual(again.port, 18080)
 
 
+
+class Https(unittest.TestCase):
+    def test_certificate_is_kept_and_remade_when_the_address_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            cert, key, fp = web.ensure_cert(d, ["192.168.1.20", "aureoclean.local"])
+            self.assertEqual(oct(key.stat().st_mode & 0o777), "0o600")
+            self.assertEqual(web.ensure_cert(d, ["192.168.1.20", "aureoclean.local"])[2], fp)   # same one again
+            self.assertNotEqual(web.ensure_cert(d, ["10.0.0.7", "aureoclean.local"])[2], fp)     # new Wi-Fi address
+            self.assertEqual(len(fp.split(":")), 32)
+
+    def test_serves_https_and_sends_http_on_to_it(self):
+        import ssl
+        import time
+        import urllib.error
+        import urllib.request
+
+        async def tiny(scope, receive, send):
+            if scope["type"] == "lifespan":
+                while True:
+                    m = await receive()
+                    if m["type"] == "lifespan.startup":
+                        await send({"type": "lifespan.startup.complete"})
+                    elif m["type"] == "lifespan.shutdown":
+                        await send({"type": "lifespan.shutdown.complete"})
+                        return
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            access = web.WebAccess(app=tiny, settings_file=Path(tmp) / "web.json", port=18443)
+            access.redirect_port = 18081
+            access.start()
+            self.addCleanup(access.stop)
+            self.assertTrue(access.running, access.error)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+            with opener.open("https://127.0.0.1:18443/health", timeout=5) as r:
+                self.assertEqual(r.read(), b"ok")
+            with self.assertRaises(Exception):          # plain http on the https port doesn't work
+                opener.open("http://127.0.0.1:18443/health", timeout=5).read()
+
+            class NoFollow(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *a, **k):
+                    return None
+            plain = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoFollow())
+            for _ in range(20):
+                try:
+                    plain.open("http://127.0.0.1:18081/report?r=2F-M", timeout=5)
+                except urllib.error.HTTPError as exc:
+                    self.assertEqual(exc.code, 308)
+                    self.assertEqual(exc.headers["Location"], "https://127.0.0.1:18443/report?r=2F-M")
+                    break
+                except OSError:
+                    time.sleep(0.2)
+            else:
+                self.fail("redirect listener didn't answer")
+            self.assertTrue(access.status()["urls"][0].startswith("https://"))
+
+
 if __name__ == "__main__":
     unittest.main()

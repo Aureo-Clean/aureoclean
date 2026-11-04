@@ -1,7 +1,7 @@
 // Administrator screens: Home, Reports (+ detail, charts), People, System.
 import {
   ago, api, busy, cached, confirmBox, firstName, get, go, greeting, h, icon, invalidate, modal, openExternal,
-  peek, post, session, shell, toast, today, when,
+  peek, post, session, shell, toast, today, when, zoomQr,
 } from './core.js';
 import {
   CATEGORY, empty, enterSubmits, errorBox, field, message, pageHead, priorityChip, refBox, say, segmented,
@@ -868,7 +868,8 @@ function kioskPanel(body) {
         .catch((err) => { el.set(!on); el.disabled = false; say(msg, err.message, 'error'); });
     }, 'Website on Wi-Fi');
     if (web.available === false) sw.disabled = true;
-    const qr = h('img', { class: 'qr hidden', alt: 'QR code for the website address' });
+    const qr = h('img', { class: 'qr zoomable hidden', alt: 'QR code for the website address (tap to enlarge)' });
+    qr.addEventListener('click', () => zoomQr(qr.src, web.urls[0]));
     if (web.enabled && web.running) {
       api('GET', '/admin/web/qr.svg', undefined, { raw: true }).then((r) => r.blob()).then((b) => { qr.src = URL.createObjectURL(b); qr.classList.remove('hidden'); }).catch(() => {});
     }
@@ -880,7 +881,10 @@ function kioskPanel(body) {
       h('div', { class: 'row' }, sw, h('b', null, web.enabled ? 'On' : 'Off')), stateLine,
       web.enabled && web.running ? h('div', { class: 'row', style: { alignItems: 'flex-start', gap: '12px' } }, h('div', { class: 'grow stack tight' },
         web.urls.slice(0, 3).map((u, i) => h('div', { class: 'url-box', style: i ? { fontSize: '12px', fontWeight: '500' } : {} }, u)),
-        h('p', { class: 'small muted' }, 'Type the first address exactly (or scan the QR code) on a phone connected to the same Wi-Fi as the Pi — not mobile data.')), qr) : null,
+        h('p', { class: 'small muted' }, 'Type the first address exactly (or scan the QR code — tap it to make it bigger) on a phone connected to the same Wi-Fi as the Pi, not mobile data.')), qr) : null,
+      web.enabled && web.running ? h('div', { class: 'secure-note' }, icon('lock'), h('div', null, h('b', null, 'Secure connection (HTTPS)'),
+        h('div', { class: 'small' }, 'Everything between the phone and the Pi is encrypted. The first time, the phone says the certificate isn\'t trusted, because this Pi made it itself: tap Advanced → Proceed / Visit this website. It asks once per phone.'),
+        web.fingerprint ? h('div', { class: 'small', style: { marginTop: '4px', opacity: '.8', overflowWrap: 'anywhere' } }, `Certificate fingerprint (to check it's this Pi): ${web.fingerprint.slice(0, 23)}…`) : null)) : null,
       web.enabled ? testRow(msg) : null, msg));
     const linkRow = (text, url) => h('button', { class: 'linkrow', type: 'button', onclick: () => openExternal(url) }, text, icon('external'));
     cards.push(h('section', { class: 'card' }, h('h2', { style: { marginBottom: '4px' } }, 'Websites'),

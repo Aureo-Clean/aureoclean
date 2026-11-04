@@ -16,9 +16,9 @@ Automated restroom hygiene monitoring · STI College Caloocan
 
 ```
 Pi window (desktop/shell.py) ─┐
-                              ├─HTTP─▶ AureoClean service (backend/, 127.0.0.1:8765) ─▶ Firebase / SQLite
+                              ├─HTTPS▶ AureoClean service (backend/, 127.0.0.1:8765) ─▶ Firebase / SQLite
 Phones on the same Wi-Fi ─────┘          + the web app (webapp/)         └─▶ GSM modem (SMS)
-   (optional listener on :8080, private network addresses only)
+   (optional HTTPS listener on :8443, private network addresses only; :8080 redirects)
 ```
 
 `./run_local.sh --classic` opens the previous Qt screens (also used automatically if the new
@@ -455,10 +455,17 @@ shown on screen to pass on yourself.
 
 System → **Kiosk & web** → *Website on Wi-Fi* lets phones and laptops on the **same Wi-Fi** open
 AureoClean (everything works the same as on the Pi). The addresses and a QR code are shown
-there, e.g. `http://raspberrypi.local:8080`. It only accepts private network addresses and
-limits sign-in attempts per device; it is never reachable from the internet unless someone
-forwards the port. Note: it's plain `http`, like most devices on a local network, so use it on
-a Wi-Fi you trust (some school networks also block phones from reaching other devices).
+there, e.g. `https://192.168.1.20:8443` — **tap the QR code to make it bigger**. It only accepts
+private network addresses and limits sign-in attempts per device; it is never reachable from the
+internet unless someone forwards the port.
+
+**Secure (HTTPS):** everything between the phone and the Pi is encrypted, with a certificate the
+Pi makes for itself (`~/.config/aureoclean/web-cert.pem`, key `web-key.pem` owner-only; made
+again if the Pi's address changes). Because no outside company signed it, a phone warns the first
+time ("Your connection is not private"): tap **Advanced → Proceed** (Chrome) or **Show details →
+visit this website** (Safari). The certificate fingerprint is shown on the Pi so you can check it's
+really this Pi. Old `http://…:8080` links still work: they redirect to the https address. Some school
+networks block phones from reaching other devices — use a phone hotspot or your own router then.
 
 ## System health (System → Health)
 

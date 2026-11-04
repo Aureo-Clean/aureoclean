@@ -317,16 +317,35 @@ export function openExternal(url) {
   else window.open(url, '_blank', 'noopener');
 }
 
+// Tap a QR code: show it big, so a phone can scan it from further away. Tap anywhere to close.
+export function zoomQr(src, caption = '') {
+  if (!src) return;
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const overlay = h('div', { class: 'qr-zoom', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'QR code (tap to close)' },
+    h('img', { src, alt: 'QR code' }),
+    caption ? h('div', { class: 'cap' }, caption) : null,
+    h('div', { class: 'hint' }, 'Tap anywhere to close'));
+  overlay.addEventListener('click', close);
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(overlay);
+}
+
 // Kiosk mode: show the link as a QR code to open on a phone instead of an error.
 function linkOnPhone(url) {
   const img = h('div', { class: 'qr-box', 'aria-label': 'QR code' }, h('div', { class: 'skeleton', style: { width: '180px', height: '180px' } }));
   api('GET', `/qr.svg?url=${encodeURIComponent(url)}`, undefined, { raw: true, timeout: 15000 })
     .then((r) => r.blob())
-    .then((b) => img.replaceChildren(h('img', { src: URL.createObjectURL(b), alt: '', width: 180, height: 180 })))
+    .then((b) => {
+      const src = URL.createObjectURL(b);
+      const pic = h('img', { src, alt: 'QR code (tap to enlarge)', width: 180, height: 180, class: 'zoomable' });
+      pic.addEventListener('click', () => zoomQr(src, url.replace(/^https:\/\//, '')));
+      img.replaceChildren(pic);
+    })
     .catch(() => img.replaceChildren());
   modal((close) => [
     h('h2', null, 'Open this on your phone'),
-    h('p', { class: 'muted', style: { margin: '0' } }, 'Kiosk mode keeps other websites off this screen. Scan the code with your phone\'s camera, or type the address:'),
+    h('p', { class: 'muted', style: { margin: '0' } }, 'Kiosk mode keeps other websites off this screen. Scan the code with your phone\'s camera (tap it to make it bigger), or type the address:'),
     img,
     h('div', { class: 'link-text' }, url.replace(/^https:\/\//, '')),
     h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'button', onclick: () => close() }, 'Done')),

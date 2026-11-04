@@ -10,6 +10,7 @@ pyserial>=3.5,<4
 spidev>=3.6,<4; sys_platform == "linux"   # RC522 ID-card reader (SPI)
 segno>=1.6,<2
 openpyxl>=3.1,<4
+cryptography>=42,<60     # encrypted local data, HTTPS for the Wi-Fi website
 
 # Firebase (optional: only for AUREOCLEAN_MODE=firebase) and the libraries it pulls in.
 # The lower bounds skip old releases with broken metadata (e.g. "cachecontrol has an invalid Requires-Python").

@@ -957,3 +957,15 @@ body:not(.on-pi) .tap-art.waiting:not(.small) { animation: tap-pulse 1.6s var(--
 .card-hint.big .tap-art.small .icon-svg { width: 44px; height: 44px; }
 .card-hint.big .t { font-size: 22px; }
 .card-hint.big .d { font-size: 14px; }
+
+/* ---------------------------------------------------------------- QR codes: tap to enlarge */
+img.zoomable { cursor: zoom-in; }
+.qr-zoom { position: fixed; inset: 0; z-index: 2000; background: #fff; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: var(--s3); padding: var(--s4); cursor: zoom-out; }
+.qr-zoom img { width: min(86vh, 86vw); height: min(86vh, 86vw); max-height: calc(100vh - 90px); object-fit: contain;
+  image-rendering: pixelated; }
+.qr-zoom .cap { font-weight: 700; font-size: 18px; color: var(--ink); text-align: center; word-break: break-all; }
+.qr-zoom .hint { font-size: 13px; color: var(--muted); }
+.secure-note { display: flex; gap: var(--s2); align-items: flex-start; padding: var(--s2) var(--s3); border-radius: var(--radius-sm);
+  background: var(--green-soft); color: var(--green-text); }
+.secure-note .icon-svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px; }
