@@ -1,7 +1,7 @@
 // Kiosk mode lock screen: after a few minutes without a touch the Pi screen locks.
 // The PIN (or the password, if no PIN is set) brings you back where you were;
 // five wrong tries sign the session out (enforced by the service).
-import { closeAllModals, h, post, session, shell } from './core.js';
+import { closeAllModals, get, h, post, session, shell } from './core.js';
 
 let lastActivity = Date.now();
 let lockEl = null;
@@ -66,6 +66,7 @@ export function lockNow(minutes = 0) {
   }
   function close() {
     clearInterval(clockTimer);
+    clearTimeout(cardTimer);
     document.removeEventListener('keydown', onKey, true);
     lockEl && lockEl.remove();
     lockEl = null;
@@ -79,6 +80,27 @@ export function lockNow(minutes = 0) {
     else if (e.key === 'Enter') { unlock(); e.preventDefault(); }
   };
   document.addEventListener('keydown', onKey, true);
+
+  // A janitor can also tap their own ID card on the reader (admins still type the PIN).
+  let cardTimer = null;
+  let cardSeq = null;
+  async function cardLoop() {
+    if (!lockEl) return;
+    try {
+      if (cardSeq === null) {
+        const st = await get('/auth/card/status', { timeout: 6000 });
+        if (!st.reader) return;
+        cardSeq = st.seq || 0;
+      }
+      const r = await post('/auth/card/unlock', { after: cardSeq }, { timeout: 8000 });
+      if (typeof r.seq === 'number') cardSeq = r.seq;
+      if (r.result === 'unlocked') { close(); return; }
+      if (r.result === 'wrongCard' || r.result === 'needPin') err.textContent = r.message;
+    } catch (e) {
+      if (e.status === 401) { close(); signOut(e.message); return; }
+    }
+    if (lockEl) cardTimer = setTimeout(cardLoop, 700);
+  }
 
   // Keys react the moment a finger touches them (touchscreens can drop or delay "click").
   const key = (label, fn, cls = '') => {
@@ -104,6 +126,9 @@ export function lockNow(minutes = 0) {
       h('div', { class: 'note' }, minutes ? `Locked after ${minutes} min without use. Alerts and texts keep running.` : 'Alerts and texts keep running while locked.')),
     h('div', { class: 'pad' }, pad, err,
       h('button', { class: 'out', type: 'button', onclick: () => { close(); signOut(); } }, 'Sign out instead')));
+  const byCard = user.hasCard && shell.isPi && user.role !== 'admin';   // admins always type their PIN
+  if (byCard) lockEl.querySelector('.pad').prepend(h('div', { class: 'card-or' }, usePin ? 'Tap your ID card — or type your PIN' : 'Tap your ID card — or type your password'));
   document.body.append(lockEl);
+  if (byCard) setTimeout(cardLoop, 300);
   if (!usePin) setTimeout(() => pw.focus(), 50);  // the lock covers everything, so it always takes the focus
 }

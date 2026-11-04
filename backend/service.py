@@ -299,6 +299,8 @@ def _public_profile(profile: dict) -> dict:
     out = {k: profile.get(k) for k in keys}
     out["smsAlerts"] = bool(out["smsAlerts"])
     out["hasLockPin"] = bool(profile.get("lockPinHash"))
+    out["hasCard"] = bool(profile.get("cardHash"))
+    out["cardLinkedAt"] = profile.get("cardLinkedAt") if out["hasCard"] else None
     out["smsOnly"] = bool(profile.get("smsOnly"))
     pending = profile.get("smsPending") or {}
     out["smsPendingPhone"] = pending.get("phone") if not _expired(pending.get("expiresAt")) else None
@@ -379,6 +381,20 @@ class AureoService:
         # SMS verification codes: at most 3 texts per user per 15 minutes.
         self.sms_sends = FailureTracker(3, 15)
         self.unlock_failures = FailureTracker(5, 15)  # idle-lock screen: 5 wrong tries ends the session
+        # RFID ID-card sign-in (RC522 on the Pi). Only a keyed hash of each card's UID is kept.
+        from .localcrypt import load_or_create_key
+        from .rfid import CardReader
+        self._card_key = load_or_create_key(settings.sms_settings_file.with_name("card.key"))
+        spi = (os.environ.get("AUREOCLEAN_RFID_SPI", "0.0").strip() or "0.0").split(".")
+        self.card_reader = CardReader(self.card_scanned, mode=os.environ.get("AUREOCLEAN_RFID", "auto"),
+                                      bus=int(spi[0]) if spi[0].isdigit() else 0,
+                                      device=int(spi[-1]) if spi[-1].isdigit() else 0)
+        self._card_lock = threading.Lock()
+        self._card_scan: Optional[dict] = None      # the last tap, waiting for the sign-in screen
+        self._card_seq = 0
+        self._card_link: Optional[dict] = None      # "tap your card now" (linking a card to an account)
+        self._card_tickets: dict[str, dict] = {}    # admin tapped a card: waiting for the PIN
+        self.card_pin_failures = FailureTracker(5, 15)
 
     # ============================================================ audit
     def audit(self, action: str, actor: dict, target: Optional[str] = None, details: Optional[dict] = None):
@@ -675,12 +691,181 @@ class AureoService:
             self.audit("admin_email_verified", {"type": profile["role"], "uid": uid, "username": profile["username"]}, uid)
 
         self.login_failures.reset(key)
+        return self._start_session(uid, profile)
+
+    def _start_session(self, uid: str, profile: dict, how: str = "password") -> dict:
         profile["lastLoginAt"] = iso(utcnow())
         self.store.set(self.C_USERS, uid, profile)
         session = self.sessions.create(profile)
-        self.audit("login", session.actor, uid)
+        self.audit("login" if how == "password" else "card_login", session.actor, uid)
         return {"token": session.token, "expiresAt": iso(session.expires_at),
                 "user": {**_public_profile(profile), "idleLockMinutes": idle_lock_minutes()}}
+
+    # ============================================================ ID-card (RFID) sign-in
+    CARD_SCAN_SECONDS = 10      # a tap is used by the sign-in screen within this time, or forgotten
+    CARD_LINK_SECONDS = 30
+    CARD_PIN_SECONDS = 60
+
+    def card_hash(self, uid: str) -> str:
+        import hmac
+        return hmac.new(self._card_key, ("card:" + (uid or "").strip().upper()).encode(), hashlib.sha256).hexdigest()
+
+    def _user_by_card(self, card: str) -> Optional[tuple[str, dict]]:
+        rows = self.store.query(self.C_USERS, cardHash=card)
+        return rows[0] if rows else None
+
+    def card_scanned(self, uid: str) -> None:
+        """Called by the card reader (its own thread) once per tap."""
+        card = self.card_hash(uid)
+        with self._card_lock:
+            link = self._card_link
+            if link and link["state"] == "waiting" and time.monotonic() < link["until"]:
+                self._finish_card_link(link, card)
+                return
+            self._card_seq += 1
+            self._card_scan = {"card": card, "at": time.monotonic(), "seq": self._card_seq}
+
+    def _take_scan(self, after: int) -> Optional[dict]:
+        with self._card_lock:
+            scan = self._card_scan
+            if not scan or scan["seq"] <= after or time.monotonic() - scan["at"] > self.CARD_SCAN_SECONDS:
+                return None
+            self._card_scan = None      # one tap, one use
+            return scan
+
+    def card_status(self) -> dict:
+        st = self.card_reader.status()
+        return {"reader": st["available"], "enabled": st["enabled"], "detail": st["detail"], "seq": self._card_seq}
+
+    def card_poll(self, after: int = 0) -> dict:
+        """The sign-in screen asks: was a card tapped? Janitors are signed in; admins are asked for their PIN."""
+        scan = self._take_scan(after)
+        if not scan:
+            return {"result": "none", "seq": self._card_seq}
+        row = self._user_by_card(scan["card"])
+        if not row:
+            self.audit("card_unknown", {"type": "system", "username": "card-reader"})
+            return {"result": "unknown", "seq": scan["seq"],
+                    "message": "This card isn't linked to an account yet. Sign in with your password, "
+                               "then link it in My account → ID card."}
+        uid, profile = row
+        if profile.get("status") != "active":
+            return {"result": "error", "seq": scan["seq"], "message": "This account has been disabled. Contact an administrator."}
+        if profile.get("role") == ROLE_ADMIN:
+            ticket = secrets.token_urlsafe(24)
+            now = time.monotonic()
+            with self._card_lock:
+                self._card_tickets = {k: v for k, v in self._card_tickets.items() if v["until"] > now}
+                self._card_tickets[ticket] = {"uid": uid, "until": now + self.CARD_PIN_SECONDS, "tries": 0}
+            return {"result": "needPin", "seq": scan["seq"], "ticket": ticket, "name": profile.get("fullName") or profile.get("username"),
+                    "usePin": bool(profile.get("lockPinHash"))}
+        return {"result": "signedIn", "seq": scan["seq"], **self._start_session(uid, profile, how="card")}
+
+    def _check_pin_or_password(self, uid: str, profile: dict, secret: str) -> bool:
+        if profile.get("lockPinHash"):
+            return verify_secret(secret or "", profile["lockPinHash"])
+        try:
+            return bool(secret) and self.identity.verify_password(profile.get("email", ""), secret) == uid
+        except AccountDisabled:
+            return False
+
+    def card_pin(self, ticket: str, secret: str) -> dict:
+        """Admin tapped their card: their screen-lock PIN (or password, without a PIN) finishes the sign-in."""
+        with self._card_lock:
+            t = self._card_tickets.get(ticket or "")
+            if not t or t["until"] < time.monotonic():
+                self._card_tickets.pop(ticket or "", None)
+                raise Unauthorized("That took too long. Tap your card again.")
+        uid = t["uid"]
+        key = f"cardpin:{uid}"
+        if self.card_pin_failures.locked_for(key):
+            raise TooManyAttempts("Too many wrong tries. Sign in with your password.")
+        profile = self.store.get(self.C_USERS, uid) or {}
+        if profile.get("status") != "active":
+            raise Forbidden("This account has been disabled.")
+        if not self._check_pin_or_password(uid, profile, secret):
+            self.card_pin_failures.record_failure(key)
+            t["tries"] += 1
+            if t["tries"] >= 3:
+                with self._card_lock:
+                    self._card_tickets.pop(ticket, None)
+                self.audit("card_pin_failed", {"type": ROLE_ADMIN, "uid": uid, "username": profile.get("username")}, uid)
+                raise Unauthorized("Too many wrong tries. Tap your card again, or sign in with your password.")
+            raise BadRequest("Wrong PIN." if profile.get("lockPinHash") else "Wrong password.")
+        with self._card_lock:
+            self._card_tickets.pop(ticket, None)
+        self.card_pin_failures.reset(key)
+        return self._start_session(uid, profile, how="card")
+
+    def card_unlock(self, session: Session, after: int = 0) -> dict:
+        """The lock screen asks: did the signed-in janitor tap their own card?"""
+        scan = self._take_scan(after)
+        if not scan:
+            return {"result": "none", "seq": self._card_seq}
+        profile = self.store.get(self.C_USERS, session.uid) or {}
+        if profile.get("cardHash") != scan["card"]:
+            return {"result": "wrongCard", "seq": scan["seq"], "message": "That isn't your card. Sign out to let someone else sign in."}
+        if profile.get("role") == ROLE_ADMIN:
+            return {"result": "needPin", "seq": scan["seq"], "message": "Card OK — now type your PIN."}
+        self.unlock_failures.reset(f"unlock:{session.uid}")
+        return {"result": "unlocked", "seq": scan["seq"]}
+
+    def start_card_link(self, actor: Session, target_uid: Optional[str] = None) -> dict:
+        uid = target_uid or actor.uid
+        if uid != actor.uid and actor.role != ROLE_ADMIN:
+            raise Forbidden("Only administrators can link a card for someone else.")
+        profile = self.store.get(self.C_USERS, uid)
+        if not profile or profile.get("smsOnly"):
+            raise NotFound("Account not found.")
+        if not self.card_reader.available:
+            raise ServiceUnavailable(f"The card reader isn't ready. {self.card_reader.detail}")
+        with self._card_lock:
+            self._card_scan = None
+            self._card_link = {"uid": uid, "by": actor.uid, "actor": actor.actor, "until": time.monotonic() + self.CARD_LINK_SECONDS,
+                               "state": "waiting", "message": "Tap the ID card on the reader now…",
+                               "name": profile.get("fullName") or profile.get("username")}
+        return {"state": "waiting", "seconds": self.CARD_LINK_SECONDS, "message": "Tap the ID card on the reader now…"}
+
+    def _finish_card_link(self, link: dict, card: str) -> None:
+        other = self._user_by_card(card)
+        if other and other[0] != link["uid"]:
+            link.update(state="taken", message=f"This card is already linked to {other[1].get('fullName') or other[1].get('username')}. "
+                                              "Remove it from that account first.")
+            return
+        when = iso(utcnow())
+        self.store.transact(self.C_USERS, link["uid"], lambda u: {**u, "cardHash": card, "cardLinkedAt": when})
+        self._unlock_cache.pop(link["uid"], None)
+        link.update(state="linked", message="Card linked. Tap it on the sign-in screen to sign in.")
+        self.audit("card_linked", link["actor"], link["uid"], {"for": link["name"]})
+
+    def card_link_status(self, actor: Session, target_uid: Optional[str] = None) -> dict:
+        uid = target_uid or actor.uid
+        with self._card_lock:
+            link = self._card_link
+            if not link or link["uid"] != uid or link["by"] != actor.uid:
+                return {"state": "idle"}
+            if link["state"] == "waiting" and time.monotonic() > link["until"]:
+                link.update(state="expired", message="No card was read. Hold the card flat on the reader and try again.")
+            out = {"state": link["state"], "message": link["message"],
+                   "secondsLeft": max(0, round(link["until"] - time.monotonic()))}
+            if link["state"] != "waiting":
+                self._card_link = None
+            return out
+
+    def cancel_card_link(self, actor: Session) -> None:
+        with self._card_lock:
+            if self._card_link and self._card_link["by"] == actor.uid:
+                self._card_link = None
+
+    def remove_card(self, actor: Session, target_uid: Optional[str] = None) -> dict:
+        uid = target_uid or actor.uid
+        if uid != actor.uid and actor.role != ROLE_ADMIN:
+            raise Forbidden("Only administrators can remove someone else's card.")
+        if not self.store.get(self.C_USERS, uid):
+            raise NotFound("Account not found.")
+        self.store.transact(self.C_USERS, uid, lambda u: {k: v for k, v in u.items() if k not in ("cardHash", "cardLinkedAt")})
+        self.audit("card_removed", actor.actor, uid)
+        return {"message": "Card removed. It can't be used to sign in any more."}
 
     def _check_credentials(self, ident: str, password: str, key: str) -> tuple[str, str]:
         """Resolve a username or email and check the password. Returns (email, uid)."""

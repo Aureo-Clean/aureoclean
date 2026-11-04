@@ -81,6 +81,18 @@ class HealthMonitor:
         return _check("sensor_feed", "Sensor data (Firebase)", "warn",
                       f"Not connected ({(st['error'] or 'starting…')[:120]}). The dashboard uses the Arduino API meanwhile.")
 
+    def card_reader(self):
+        reader = getattr(self.svc, "card_reader", None)
+        if reader is None or not reader.enabled:
+            return None
+        st = reader.status()
+        if st["available"]:
+            linked = sum(1 for _, u in self.svc.store.query(self.svc.C_USERS) if u.get("cardHash"))
+            return _check("rfid", "ID card reader", "ok", f"{st['detail']} {linked} card(s) linked.")
+        if st["everFound"]:
+            return _check("rfid", "ID card reader", "fail", st["detail"])
+        return _check("rfid", "ID card reader", "off", f"Not found (optional). {st['detail']}")
+
     def modem(self):
         sms = self.svc.sms
         if sms.mode != "modem":
@@ -214,7 +226,7 @@ class HealthMonitor:
 
     # ------------------------------------------------------------------ all
     def report(self, force_balance: bool = False) -> dict:
-        checks = [c for c in (self.internet(), self.cloud(), self.sensor_feed(), self.modem(), self.promo(), self.sending(), self.email()) if c]
+        checks = [c for c in (self.internet(), self.cloud(), self.sensor_feed(), self.card_reader(), self.modem(), self.promo(), self.sending(), self.email()) if c]
         bal = self.balance(force_balance)
         if bal["status"] != "off" or self.balance_code:  # optional: only shown once a balance code is set
             checks.append(bal)

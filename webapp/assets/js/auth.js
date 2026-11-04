@@ -2,6 +2,7 @@
 // invite, request status. Same layout on the Pi (side panel) and phones (stacked).
 import { busy, focusSoon, get, go, h, icon, modal, post, session, shell } from './core.js';
 import { enterSubmits, field, message, say } from './ui.js';
+import { cardSignIn } from './card.js';
 
 const PASSWORD_MAX = 16;
 
@@ -50,10 +51,8 @@ export function loginView(_params, query) {
     busy(submit, 'Signing in…', async () => {
       try {
         const res = await post('/auth/login', { identifier: ident.input.value.trim(), password: pass.input.value }, { timeout: 60000 });
-        session.set(res.token);
-        session.user = res.user;
         pass.input.value = '';
-        go(res.user.role === 'admin' ? '/home' : '/sensors', { replace: true });
+        signedIn(res);
       } catch (err) {
         const verify = /verify your email/i.test(err.message);
         resend.classList.toggle('hidden', !verify);
@@ -70,6 +69,13 @@ export function loginView(_params, query) {
     } catch (err) { say(msg, err.message, 'error'); }
   }));
   enterSubmits([ident, pass], submit);
+  function signedIn(res) {
+    cardIn.stop();
+    session.set(res.token);
+    session.user = res.user;
+    go(res.user.role === 'admin' ? '/home' : '/sensors', { replace: true });
+  }
+  const cardIn = cardSignIn({ msg, onSignedIn: signedIn });   // ID-card reader on the Pi (hidden when there is none)
 
   get('/health?recheck=true', { timeout: 15000 }).then((r) => {
     const online = r.internet === 'online' || r.internet === 'unknown';
@@ -87,10 +93,10 @@ export function loginView(_params, query) {
 
   const card = h('section', { class: 'auth-card' },
     h('div', { class: 'stack tight' }, h('h1', null, 'Welcome back'), h('p', { class: 'lead' }, 'Sign in to look after the restrooms.')),
-    ident, pass, msg, submit, resend, status, exitKiosk);
+    cardIn.hint, ident, pass, msg, submit, resend, status, exitKiosk);
   focusSoon(ident.input.value ? pass.input : ident.input);
   const view = authLayout(card);
-  view.cleanup = () => shell.listeners.delete(syncKiosk);
+  view.cleanup = () => { shell.listeners.delete(syncKiosk); cardIn.stop(); };
   return view;
 }
 

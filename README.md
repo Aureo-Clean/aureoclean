@@ -142,6 +142,36 @@ equivalent is a desktop launcher:
 If the service fails to start when opened from the icon, the sign-in screen
 shows the error (full details in `logs/backend.log`).
 
+## ID-card sign-in (RFID, RC522)
+
+Tap an ID card on the reader beside the screen to sign in — like the ID gates at school.
+Janitors are signed in at once; **administrators also type their screen-lock PIN** (or their password
+if they haven't set a PIN). On the lock screen a janitor can tap their own card instead of the PIN.
+
+**Link a card:** My account → *ID card* → **Link card**, then hold the card on the reader (30 s).
+Admins can link or remove someone else's card in People → ⋯ (e.g. a lost card). A card belongs to
+one account. Only a keyed hash of the card number is stored (key: `~/.config/aureoclean/card.key`),
+and card sign-in works only on the Pi itself, never from the Wi-Fi website. Every card sign-in,
+link and removal is in the activity log.
+
+**Wiring** (RC522 → Pi 4; 3.3 V only — 5 V damages it):
+
+| RC522 | Pi pin |
+|---|---|
+| SDA | 24 (GPIO8, CE0) |
+| SCK | 23 (GPIO11) |
+| MOSI | 19 (GPIO10) |
+| MISO | 21 (GPIO9) |
+| GND | 6 |
+| 3.3V | 1 |
+| RST | 17 (3.3 V) |
+| IRQ | — |
+
+Turn SPI on (setup_pi.sh does it): `sudo raspi-config` → Interface Options → SPI → Yes, reboot.
+Test it with AureoClean stopped: `.venv/bin/python tools/rfid_test.py`. System → Health shows
+"ID card reader". The RC522 reads 13.56 MHz cards (MIFARE/NFC — most school IDs and the white sample
+cards); it can't read 125 kHz proximity cards. `AUREOCLEAN_RFID=off` turns it off.
+
 ## Live sensors (Arduino IoT Cloud, no Arduino sign-in)
 
 Your Arduino Cloud dashboards are shown inside the app, in AureoClean's style: on **Home** (admins and
@@ -523,6 +553,7 @@ backend/
   smart.py         smart monitoring: trends from the ESP32 units → jobs, texts, quiet hours
   advice.py        today's plan for janitors and admins (AI, or fixed rules without it)
   sensor_feed.py   live sensor values from the Firebase Realtime Database
+  rfid.py          RC522 ID-card reader (SPI): tap to sign in
   firestore_format.py  how documents look in Firestore (timestamps)
   localcrypt.py    encryption of the local copy
   providers/synced.py  Firebase ⇄ local copy sync, offline accounts

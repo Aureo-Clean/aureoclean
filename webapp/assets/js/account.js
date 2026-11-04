@@ -1,5 +1,6 @@
 // My account (admins and janitors): profile, password, lock PIN, SMS alerts.
-import { busy, get, h, initials, modal, post, session, toast } from './core.js';
+import { busy, confirmBox, get, h, initials, modal, post, session, shell, toast } from './core.js';
+import { linkCardDialog } from './card.js';
 import { enterSubmits, field, message, pageHead, say, switchEl } from './ui.js';
 
 export function accountView(_p, _q, ctx) {
@@ -27,9 +28,28 @@ export function accountView(_p, _q, ctx) {
         h('button', { class: 'btn sm', type: 'button', onclick: passwordDialog }, 'Change')),
       h('div', { class: 'setting' }, h('div', { class: 'grow' }, h('div', { class: 't' }, 'Screen-lock PIN'),
         h('div', { class: 'd' }, me.hasLockPin ? 'Set · unlocks the Pi screen in kiosk mode' : 'Not set · the password unlocks the screen')),
-      h('button', { class: 'btn sm', type: 'button', onclick: () => pinDialog(me.hasLockPin, load) }, me.hasLockPin ? 'Change' : 'Set PIN')));
+      h('button', { class: 'btn sm', type: 'button', onclick: () => pinDialog(me.hasLockPin, load) }, me.hasLockPin ? 'Change' : 'Set PIN')),
+      cardSetting(me));
 
     return [profile, h('div', { class: 'grid2' }, security, smsCard(me))];
+  }
+
+  function cardSetting(me) {
+    const linked = me.cardLinkedAt ? new Date(me.cardLinkedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    const what = me.role === 'admin' ? 'tap it, then type your PIN' : 'tap it on the sign-in screen';
+    let button;
+    if (me.hasCard) {
+      button = h('button', { class: 'btn sm', type: 'button' }, 'Remove');
+      button.addEventListener('click', async () => {
+        if (!(await confirmBox('Remove your ID card?', 'It will no longer sign you in. You can link it again any time.', { ok: 'Remove', danger: true }))) return;
+        try { await post('/me/card/remove'); toast('ID card removed.'); load(); } catch (err) { toast(err.message, 'error'); }
+      });
+    } else if (shell.isPi) {
+      button = h('button', { class: 'btn sm', type: 'button', onclick: () => linkCardDialog({ urls: { start: '/me/card/link', status: '/me/card/link', cancel: '/me/card/link/cancel' }, after: load }) }, 'Link card');
+    }
+    return h('div', { class: 'setting' }, h('div', { class: 'grow' }, h('div', { class: 't' }, 'ID card'),
+      h('div', { class: 'd' }, me.hasCard ? `Linked${linked ? ` ${linked}` : ''} · ${what}` : shell.isPi ? `Not linked · link your school ID, then ${what}` : 'Not linked · link it on the Pi touchscreen (card reader)')),
+    button || null);
   }
 
   function smsCard(me) {

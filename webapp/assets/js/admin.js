@@ -11,6 +11,7 @@ import { aiFillBox, aiHeadline, aiTipCard, DANGER_NOTE, periodSummaryCard } from
 import { sensorsCard } from './sensors.js';
 import { smartStrip } from './smart.js';
 import { dataPanel, deleteReportDialog, firebaseBanner } from './data.js';
+import { linkCardDialog } from './card.js';
 
 const PUBLIC_SITE = 'https://aureo-clean.github.io/aureoclean/';
 
@@ -529,6 +530,18 @@ function userActions(u, after) {
         catch (err) { say(msg, err.message, 'error'); }
       }));
       items.push(toggle);
+    }
+    if (!u.smsOnly && u.hasCard) {
+      const rm = h('button', { class: 'btn block', type: 'button' }, icon('idcard'), 'Remove ID card (lost or replaced)');
+      rm.addEventListener('click', () => busy(rm, 'Removing…', async () => {
+        try { const r = await post(`/admin/users/${encodeURIComponent(u.uid)}/card/remove`); close(); toast(r.message, 'success'); after(); }
+        catch (err) { say(msg, err.message, 'error'); }
+      }));
+      items.push(rm);
+    } else if (!u.smsOnly && shell.isPi) {
+      const base = `/admin/users/${encodeURIComponent(u.uid)}/card/link`;
+      items.push(h('button', { class: 'btn block', type: 'button', onclick: () => { close(); linkCardDialog({ urls: { start: base, status: base, cancel: '/me/card/link/cancel' }, who: u.fullName || u.username, after }); } },
+        icon('idcard'), 'Link an ID card…'));
     }
     if (u.smsPhone) {
       const test = h('button', { class: 'btn block', type: 'button' }, icon('sms'), 'Send a test text');

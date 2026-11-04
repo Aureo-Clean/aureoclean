@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from .factory import build_service
 from .providers.base import ProviderError
-from .service import ROLE_ADMIN, ROLE_JANITOR, AureoService, ServiceError, ServiceUnavailable as ServiceUnavailableError, Session
+from .service import ROLE_ADMIN, ROLE_JANITOR, AureoService, Forbidden, ServiceError, ServiceUnavailable as ServiceUnavailableError, Session
 from .web import SECURITY_HEADERS, TYPES, RateLimit, is_private, qr_svg, static_file
 
 log = logging.getLogger("aureoclean")
@@ -65,6 +65,15 @@ class ChangePasswordBody(BaseModel):
 class LockPinBody(BaseModel):
     password: str = Field(default="", max_length=200)
     pin: str = Field(default="", max_length=12)
+
+
+class CardPollBody(BaseModel):
+    after: int = Field(0, ge=-1)
+
+
+class CardPinBody(BaseModel):
+    ticket: str = Field(..., max_length=80)
+    secret: str = Field("", max_length=128)
 
 
 class UnlockBody(BaseModel):
@@ -378,6 +387,63 @@ def create_app(service: Optional[AureoService] = None) -> FastAPI:
     @app.post("/auth/lock-pin")
     def lock_pin(body: LockPinBody, session: Session = Depends(any_user)):
         return svc().set_lock_pin(session, body.password, body.pin)
+
+    # ------------------------------------------------ ID-card (RFID) sign-in: only on the Pi itself
+    def at_the_pi(request: Request) -> None:
+        if via_wifi(request):
+            raise Forbidden("Use the card reader on the Pi's touchscreen.")
+
+    @app.get("/auth/card/status")
+    def card_status(request: Request):
+        if via_wifi(request):
+            return {"reader": False, "enabled": False, "detail": "", "seq": 0}
+        return svc().card_status()
+
+    @app.post("/auth/card/poll")
+    def card_poll(body: CardPollBody, request: Request):
+        at_the_pi(request)
+        return svc().card_poll(body.after)
+
+    @app.post("/auth/card/pin")
+    def card_pin(body: CardPinBody, request: Request):
+        at_the_pi(request)
+        return svc().card_pin(body.ticket, body.secret)
+
+    @app.post("/auth/card/unlock")
+    def card_unlock(body: CardPollBody, request: Request, session: Session = Depends(any_user)):
+        at_the_pi(request)
+        return svc().card_unlock(session, body.after)
+
+    @app.post("/me/card/link")
+    def my_card_link(request: Request, session: Session = Depends(any_user)):
+        at_the_pi(request)
+        return svc().start_card_link(session)
+
+    @app.get("/me/card/link")
+    def my_card_link_status(session: Session = Depends(any_user)):
+        return svc().card_link_status(session)
+
+    @app.post("/me/card/link/cancel")
+    def my_card_link_cancel(session: Session = Depends(any_user)):
+        svc().cancel_card_link(session)
+        return {"ok": True}
+
+    @app.post("/me/card/remove")
+    def my_card_remove(session: Session = Depends(any_user)):
+        return svc().remove_card(session)
+
+    @app.post("/admin/users/{uid}/card/link")
+    def user_card_link(uid: str, request: Request, session: Session = Depends(admin)):
+        at_the_pi(request)
+        return svc().start_card_link(session, uid)
+
+    @app.get("/admin/users/{uid}/card/link")
+    def user_card_link_status(uid: str, session: Session = Depends(admin)):
+        return svc().card_link_status(session, uid)
+
+    @app.post("/admin/users/{uid}/card/remove")
+    def user_card_remove(uid: str, session: Session = Depends(admin)):
+        return svc().remove_card(session, uid)
 
     @app.post("/auth/unlock")
     def unlock(body: UnlockBody, session: Session = Depends(any_user)):
@@ -844,6 +910,7 @@ def run() -> None:
         service.sensor_feed.start()  # live sensor values from the Firebase Realtime Database
     service.sensor_alerts.start()   # sensor limits → reports and texts (fixed rules), every 15 s
     service.smart.start()           # smart monitoring: trends → jobs and texts (fixed rules), every 5 s
+    service.card_reader.start()     # RC522 ID-card reader (tap to sign in); off with AUREOCLEAN_RFID=off
     threading.Thread(target=service.smart.seed, daemon=True, name="smart-seed").start()   # learn from Arduino history
     from .web import WebAccess
 

@@ -934,3 +934,21 @@ pre.json { margin: 0; padding: var(--s3); border-radius: var(--radius-sm); backg
              color: var(--amber-text); border: 1px solid #E9B866; flex-shrink: 0; }
 .fb-banner > .icon-svg { width: 22px; height: 22px; flex-shrink: 0; }
 .fb-banner b { color: var(--ink); }
+
+/* ---------------------------------------------------------------- ID card (RFID) */
+.card-hint { display: flex; align-items: center; gap: var(--s3); padding: var(--s3); border: 1px dashed var(--blue);
+  border-radius: var(--radius-sm); background: var(--blue-soft); }
+.card-hint .t { font-weight: 600; font-size: 14px; color: var(--ink); }
+.card-hint .d { font-size: 12px; color: var(--muted); }
+.tap-art { width: 84px; height: 84px; margin: var(--s2) auto; border-radius: 50%; display: grid; place-items: center;
+  color: var(--blue); background: var(--blue-soft); border: 2px solid var(--blue); }
+.tap-art .icon-svg { width: 44px; height: 44px; }
+.tap-art.small { width: 44px; height: 44px; margin: 0; flex-shrink: 0; border-width: 1.5px; }
+.tap-art.small .icon-svg { width: 24px; height: 24px; }
+.tap-art.waiting { border-style: dashed; }
+.tap-art.ok { color: var(--green-text); background: var(--green-soft); border-color: var(--green); border-style: solid; }
+.tap-art.bad { color: var(--red-text); background: var(--red-soft); border-color: var(--red); border-style: solid; }
+body:not(.on-pi) .tap-art.waiting:not(.small) { animation: tap-pulse 1.6s var(--ease) 3; }
+@keyframes tap-pulse { 50% { transform: scale(1.06); } }
+.lock .card-or { text-align: center; font-size: 13px; font-weight: 600; padding: 8px 10px; margin-bottom: 4px;
+  border: 1px dashed rgba(255,255,255,.35); border-radius: 12px; }

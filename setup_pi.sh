@@ -65,6 +65,15 @@ if ! id -nG "$USER" | grep -qw dialout; then
   echo "   Added $USER to the 'dialout' group (serial port access). Takes effect after a reboot."
 fi
 
+# ID-card reader (RC522 on the SPI pins): turn SPI on and allow this user to use it.
+if command -v raspi-config >/dev/null 2>&1 && [ ! -e /dev/spidev0.0 ]; then
+  sudo raspi-config nonint do_spi 0 && echo "   Turned SPI on (for the RC522 card reader). Takes effect after a reboot."
+fi
+if getent group spi >/dev/null && ! id -nG "$USER" | grep -qw spi; then
+  sudo usermod -aG spi "$USER"
+  echo "   Added $USER to the 'spi' group (card reader access). Takes effect after a reboot."
+fi
+
 mkdir -p logs
 chmod +x run_local.sh tools/*.sh
 
